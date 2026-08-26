@@ -28,7 +28,9 @@
    where `datasource` is a pool on the same SQLite file the event store
    uses. Tables are prefixed `auth_`, so an existing backup script covers
    them without being told about them."
-  (:require [nickdex.grain-auth.credentials :as credentials]
+  (:require [nickdex.grain-auth.ceremony :as ceremony]
+            [nickdex.grain-auth.credentials :as credentials]
+            [nickdex.grain-auth.script :as script]
             [nickdex.grain-auth.sessions :as sessions]
             [nickdex.grain-auth.store :as store]))
 
@@ -38,6 +40,60 @@
   "Create the auth tables if absent. Idempotent; call it on every start."
   [datasource]
   (store/migrate! datasource))
+
+;; --- The ceremony -------------------------------------------------
+;;
+;; The five steps of a WebAuthn exchange, joined to the store. Each takes
+;; a `config`:
+;;
+;;   {:origin     "https://example.com"    ; scheme + host (+ port)
+;;    :app-name   "Example"                ; shown by the authenticator
+;;    :datasource ds
+;;    :accounts   {:account-id-for-handle    (fn [handle] ...)
+;;                 :handle-for-account       (fn [account-id] ...)
+;;                 :display-name-for-account (fn [account-id] ...)}}
+;;
+;; Every `begin-` returns a `:pending` string its `complete-` needs back.
+;; Where it lives in between is yours -- a signed session cookie is the
+;; usual answer. It is SINGLE USE: discard it on completion whether or
+;; not the ceremony succeeded, or a captured assertion can be replayed.
+
+(def begin-registration
+  "Start registering a key for an account that already exists. Returns
+   {:options-json :pending}. Reaching this IS the authorization decision:
+   whoever may call it may add a key to that account."
+  ceremony/begin-registration)
+
+(def complete-registration!
+  "Verify a registration response and store the credential."
+  ceremony/complete-registration!)
+
+(def begin-sign-in
+  "Start signing in as a named handle. Reveals whether an account exists
+   and cannot avoid it -- the browser needs the credential ids to offer.
+   Prefer begin-discoverable-sign-in."
+  ceremony/begin-sign-in)
+
+(def begin-discoverable-sign-in
+  "Start a usernameless sign-in for conditional-UI autofill. Needs no
+   handle and leaks nothing. The path to prefer."
+  ceremony/begin-discoverable-sign-in)
+
+(def complete-sign-in!
+  "Verify an assertion and open a session. Returns the session, whose
+   :session-id goes in your cookie, or one anomaly for every possible
+   failure."
+  ceremony/complete-sign-in!)
+
+(def ceremony-script
+  "The browser half: a <script type=\"module\"> body exposing
+   window.grainAuth.{register,signIn} and attempting autofill on load.
+   The markup around it is yours."
+  script/ceremony-script)
+
+(def default-ceremony-paths
+  "Where ceremony-script expects the handlers to be mounted."
+  script/default-paths)
 
 ;; --- Credentials --------------------------------------------------
 

@@ -7,19 +7,21 @@ Behaviour is specified in
 want to know what this is supposed to do. This README covers what is built,
 how to use it, and why it is shaped this way.
 
-## Status: alpha, and it does not do WebAuthn yet
+## Status: alpha, but complete end to end
 
-What exists is the **storage and rules layer**: credentials, sessions, and
-every rule `auth.allium` states about them, under test.
+Credentials, sessions, the rules `auth.allium` states about them, and the
+WebAuthn ceremony that drives them — registration, sign-in, and usernameless
+conditional-UI autofill, verified with `com.yubico/webauthn-server-core`.
 
-What does not exist yet is the **WebAuthn ceremony** — issuing a challenge,
-verifying an attestation or an assertion, and the routes that do it. So today
-this library records the outcome of a sign-in; it cannot yet decide that one
-happened. `sign-in!` takes a credential whose assertion you have **already
-verified**, and says so in its docstring for the obvious reason.
+**Screens are not here, on purpose.** Hiccup, shell, theme and icons differ
+between applications, and a library that shipped them would be a library you
+fight. What ships instead is the browser-side ceremony JS, which is not a
+design decision — `navigator.credentials.create` and `.get` have an exact
+shape, and every application mounting these routes needs the same code to
+talk to them.
 
-Also absent: the Datastar screens for managing keys and sessions. The name is
-forward-looking on that point — there is currently no Grain dependency at all.
+There is still no Grain dependency. The name is aspirational; this works in
+any Clojure application with a SQLite file.
 
 ## Installing
 
@@ -82,6 +84,60 @@ instant.
 Rejections come back as `cognitect.anomalies` maps, not exceptions. Messages
 are written for whoever reads them on a screen, except where saying more would
 confirm something the caller should not learn.
+
+## Wiring the ceremony
+
+The ceremony functions take a `config` naming your relying party and the seam
+to your account model:
+
+```clojure
+(def config
+  {:origin     "https://example.com"   ; scheme + host (+ port), no path
+   :app-name   "Example"               ; shown by the authenticator
+   :datasource ds
+   :accounts   {:account-id-for-handle    (fn [handle] ...)
+                :handle-for-account       (fn [account-id] ...)
+                :display-name-for-account (fn [account-id] ...)}})
+```
+
+`handle` is WebAuthn's `user.name` — whatever you call people by when an
+authenticator asks. An email works; a username works. This library never
+interprets it. `display-name-for-account` is optional and falls back to the
+handle; the two differ because an authenticator shows the display name to
+someone choosing between keys, so a person's name belongs there and an email
+belongs in the handle.
+
+Mount five handlers, at [`default-ceremony-paths`](src/nickdex/grain_auth/script.clj)
+or wherever you prefer:
+
+| Path | Calls |
+|---|---|
+| `GET /passkey/register/options` | `begin-registration` |
+| `POST /passkey/register/finish` | `complete-registration!` |
+| `GET /passkey/signin/options` | `begin-sign-in` |
+| `POST /passkey/signin/finish` | `complete-sign-in!` |
+| `GET /passkey/discover/options` | `begin-discoverable-sign-in` |
+
+Each `begin-` returns `{:options-json :pending}`. Send `:options-json` to the
+browser and stash `:pending` — a signed session cookie is the usual answer.
+The matching `complete-` needs it back.
+
+**`:pending` is single use.** Discard the stash on completion whether or not
+the ceremony succeeded. A captured assertion replayed later is the thing
+standing between an intercepted ceremony and an account.
+
+Then put the browser half on the page and write your own markup around it:
+
+```clojure
+[:script {:type "module"}
+ (auth/ceremony-script {:csrf-token token :on-success "window.location = '/'"})]
+```
+
+That exposes `window.grainAuth.register(label, statusEl)` and
+`window.grainAuth.signIn(handle, statusEl)`, and attempts conditional-UI
+autofill on load. Prefer the discoverable path: `begin-sign-in` has to reveal
+whether an account exists, because the browser needs the credential ids to
+offer, and `begin-discoverable-sign-in` needs no handle at all.
 
 ## What this library does not own
 
@@ -161,6 +217,14 @@ They run against a real SQLite database in a temp file — not `:memory:`, where
 every connection in a pool gets its own private database unless shared-cache is
 negotiated, and a two-connection test passes or fails depending on which
 connection it happened to get.
+
+One gap worth knowing: **no test exercises a ceremony that succeeds.** That
+needs a real authenticator holding a real private key, and the cryptography is
+Yubico's, verified by its own suite rather than re-verified here — faking it
+would mean faking the signature check, which is the only part that matters.
+What is covered is everything around it: the account seam Yubico calls into,
+the options a browser receives, and every failure path, including that a
+refusal never throws and that all of them say the same thing.
 
 ## License
 
