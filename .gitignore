@@ -1,0 +1,33 @@
+# Clojure build & dependency caches
+.cpcache/
+target/
+classes/
+*.jar
+*.class
+pom.xml
+pom.xml.asc
+
+# REPL & LSP tooling
+.clj-kondo/.cache/
+.lsp/
+.nrepl-history
+.nrepl-port
+.portal/
+.calva/
+.rebel_readline_history
+.socket-repl-port
+
+# OS & editor
+.DS_Store
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*~
+
+# Local databases created by tests or the REPL
+storage/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

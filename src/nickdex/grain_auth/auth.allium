@@ -1,0 +1,369 @@
+-- allium: 3
+-- auth.allium
+
+-- Scope: passkey authentication for a Grain + Datastar application
+--   (lab/grain-auth/)
+-- WebAuthn credentials, the sessions they open, and the management of
+-- both. This is a library spec: it governs credentials and sessions and
+-- knows nothing about the person behind them.
+--
+-- The consuming application supplies Account. Nothing here reads a field
+-- on it, so any entity with identity will do -- see identity.allium in
+-- smriti for the first consumer.
+--
+-- Includes: registering a credential, signing in with one, signing out,
+--           renaming and removing credentials, session expiry
+-- Excludes:
+--   - The account itself: name, email, profile, and whether an account
+--     may be created at all. The consumer owns registration, which is
+--     what lets an application close signup without this spec knowing
+--   - Every non-passkey method: password, email code, magic link, OAuth
+--   - Account recovery. A credential is the only way in, so an account
+--     that loses all of them is reachable only by the consumer
+--     registering another out of band
+--   - The WebAuthn wire ceremony: challenge issue, attestation and
+--     assertion verification, relying-party id and origin. Transport,
+--     and the reason a vetted library does it rather than this spec
+--   - Which credential opened a session. Recording it would tie a
+--     session's lifetime to a credential's, and removing a credential
+--     already ends every session on the account
+--   - Datastar signals, SSE patching, routes
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+-- A type placeholder. The consuming spec substitutes its own account
+-- entity; this one is never read, only held.
+external entity Account {}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract Authenticator {
+    make_credential: (account: Account, challenge: String) -> Credential
+    sign: (challenge: String) -> Integer
+
+    @invariant CounterRisesOrStaysZero
+        -- A device-bound authenticator returns a signature counter
+        -- strictly greater than the one it last returned. A synced
+        -- authenticator returns 0 every time, because a counter cannot
+        -- be kept consistent across copies that are all legitimate.
+
+    @invariant PrivateKeyNeverLeaves
+        -- Only the public key is ever handed over. Nothing in this spec
+        -- can read or transport the private half, which is the whole
+        -- reason a passkey is not a password.
+
+    @guidance
+        -- WebAuthn, as implemented by the browser and the platform or
+        -- roaming authenticator behind it. Verification of what comes
+        -- back is a solved and easy-to-get-wrong problem: use a vetted
+        -- library rather than reading the CBOR by hand.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Credential {
+    account: Account
+
+    -- The authenticator's own identifier for this key. Unique across
+    -- every account, not merely within one.
+    credential_id: String
+
+    -- The public half. The private half never leaves the authenticator.
+    public_key: String
+
+    -- The authenticator's signature counter as of the last assertion.
+    -- 0 forever on a synced passkey; see Authenticator.
+    sign_count: Integer
+
+    -- What the person calls this key. Theirs to set: an authenticator
+    -- does not reliably say what it is.
+    label: String
+
+    created_at: Timestamp
+    last_used_at: Timestamp?
+}
+
+entity Session {
+    account: Account
+    started_at: Timestamp
+    last_seen_at: Timestamp
+    expires_at: Timestamp
+
+    status: active | signed_out | expired
+
+    transitions status {
+        active -> signed_out
+        active -> expired
+        terminal: signed_out, expired
+    }
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- How long a sign-in lasts before it has to be done again. Absolute,
+    -- measured from the sign-in: a session that is used every day still
+    -- ends on schedule.
+    session_lifetime: Duration = 30.days
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RegisterCredential {
+    when: RegisterCredential(account, credential_id, public_key, sign_count, label)
+
+    requires: label != ""
+    requires: not exists Credential{credential_id: credential_id}
+
+    ensures:
+        Credential.created(
+            account: account,
+            credential_id: credential_id,
+            public_key: public_key,
+            sign_count: sign_count,
+            label: label,
+            created_at: now,
+        )
+
+    @guidance
+        -- The uniqueness check spans every account, not just this one.
+        -- A credential_id is unique by construction, so a collision is
+        -- not two people picking the same name -- it is the same key
+        -- being claimed twice, and letting the second claim through
+        -- would resolve one credential to two accounts.
+        --
+        -- Registration runs against an account that already exists. An
+        -- application with open signup creates the account first and
+        -- registers the credential second; one with closed signup
+        -- simply never offers the first step. That is the whole
+        -- difference, and it is the consumer's to make.
+}
+
+rule SignIn {
+    when: PresentAssertion(credential, sign_count)
+
+    requires: sign_count > credential.sign_count or sign_count = 0
+
+    ensures:
+        credential.sign_count = sign_count
+        credential.last_used_at = now
+        Session.created(
+            account: credential.account,
+            started_at: now,
+            last_seen_at: now,
+            expires_at: now + config.session_lifetime,
+            status: active,
+        )
+
+    @guidance
+        -- The counter check is WebAuthn's clone detection: a genuine
+        -- device-bound authenticator's counter only rises, so one that
+        -- repeats or goes backwards means the key was copied.
+        --
+        -- The zero case is not an exemption bolted on afterwards.
+        -- Synced authenticators -- Apple's and Google's, which is most
+        -- passkeys in use -- report 0 on every assertion by design.
+        -- Requiring a rise would reject them all.
+        --
+        -- Which credential was presented is settled before this rule
+        -- fires: the assertion names it, and verifying the signature
+        -- against that credential's public key is what makes the naming
+        -- trustworthy.
+}
+
+rule SignOut {
+    when: SignOut(session)
+
+    requires: session.status = active
+
+    ensures: session.status = signed_out
+
+    @guidance
+        -- Serves both signing yourself out here and ending a session
+        -- somewhere else. Nothing distinguishes them: a session is
+        -- ended by whoever holds the account, and where the request came
+        -- from does not change what happens to it.
+}
+
+rule SessionExpires {
+    when: session: Session.expires_at <= now
+
+    requires: session.status = active
+
+    ensures: session.status = expired
+
+    @guidance
+        -- The status guard is what stops this re-firing: an expired
+        -- session's expires_at stays in the past forever.
+}
+
+rule RenameCredential {
+    when: RenameCredential(credential, label)
+
+    requires: exists credential
+    requires: label != ""
+
+    ensures: credential.label = label
+}
+
+rule RemoveCredential {
+    when: RemoveCredential(target)
+
+    requires: exists target
+    requires: (Credentials where account = target.account).count > 1
+
+    ensures:
+        for s in Sessions where account = target.account and status = active:
+            s.status = signed_out
+        not exists target
+
+    @guidance
+        -- Removing a key ends every session on the account, not only
+        -- the ones that key opened. Blunt on purpose: a key is removed
+        -- because it was lost or stolen, and at that moment the
+        -- question is not which sessions it started but whether anyone
+        -- else is still signed in.
+        --
+        -- The last credential cannot be removed. There is no recovery
+        -- here -- no password, no email fallback -- so an account with
+        -- no credentials is an account nobody can reach. A consumer
+        -- that has its own recovery path can register a replacement
+        -- first and then remove this one.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant CredentialIdIsUnique {
+    for c in Credentials:
+        (Credentials where credential_id = c.credential_id).count = 1
+}
+
+invariant CredentialIsLabelled {
+    for c in Credentials:
+        c.label != ""
+}
+
+invariant ActiveSessionHasNotOutlivedItsGrant {
+    for s in Sessions:
+        s.status = active implies s.started_at <= s.expires_at
+}
+
+------------------------------------------------------------
+-- Actor Declarations
+------------------------------------------------------------
+
+actor CredentialHolder {
+    identified_by: Session where status = active
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface SignIn {
+    provides:
+        PresentAssertion(credential, sign_count)
+
+    @guarantee ChallengeIsSingleUse
+        -- Every assertion answers a challenge issued for that attempt
+        -- and discarded with it. A captured assertion replayed later is
+        -- refused, which is the only thing standing between an
+        -- intercepted ceremony and the account behind it.
+
+    @guarantee RejectionRevealsNothing
+        -- A refused sign-in says the same thing whether the credential
+        -- is unknown, belongs to someone else, or failed its counter
+        -- check. Telling them apart turns this surface into a way to
+        -- ask whether an account exists.
+
+    @guidance
+        -- No party is named here, because at this boundary there is not
+        -- one yet. A discoverable credential identifies its own account:
+        -- the person presents an assertion and the account follows from
+        -- it, rather than naming themselves first and proving it after.
+}
+
+surface SessionManagement {
+    facing holder: CredentialHolder
+
+    exposes:
+        for s in Sessions where account = holder.account and status = active:
+            s.started_at
+            s.last_seen_at
+            s.expires_at
+
+    provides:
+        SignOut(session)
+
+    @guarantee SigningOutIsImmediate
+        -- A session ended here stops working at once, on whatever
+        -- device holds it. A sign-out that only takes effect when that
+        -- device next asks is not a sign-out; it is a request.
+
+    @guidance
+        -- Every active session on the account, not only this one, so
+        -- that "I signed in on a machine I no longer have" is something
+        -- a person can act on themselves. The session being used to
+        -- view this list is one of the entries and can be ended like any
+        -- other.
+}
+
+surface CredentialManagement {
+    facing holder: CredentialHolder
+
+    exposes:
+        for c in Credentials where account = holder.account:
+            c.label
+            c.created_at
+            c.last_used_at
+
+    provides:
+        RegisterCredential(holder.account, credential_id, public_key, sign_count, label)
+        RenameCredential(credential, label)
+        RemoveCredential(credential)
+
+    contracts:
+        demands Authenticator
+
+    @guarantee LastCredentialCannotBeRemoved
+        -- Remove is not offered on the only remaining key, and is
+        -- refused if asked for anyway. The refusal says why, because
+        -- "add another key first" is a thing a person can act on and
+        -- "not allowed" is not.
+
+    @guarantee CredentialIdNeverShown
+        -- What is shown is the label, when the key was added and when it
+        -- was last used. The credential_id and public key are how the
+        -- system recognises a key, not how a person does.
+
+    @guidance
+        -- Multiple credentials per account is the ordinary case, not an
+        -- advanced one: a phone, a laptop and a hardware key is three,
+        -- and a person with one is a person one lost device away from
+        -- losing the account.
+        --
+        -- last_used_at is what makes a stale key recognisable. Without
+        -- it, a list of keys is a list of names nobody can tell apart.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Is session_lifetime absolute or idle? Modelled as absolute -- expires_at is set once at sign-in and never moved, so a session in daily use still ends after 30 days. last_seen_at is recorded but nothing reads it. Idle expiry would extend expires_at on each request, which is friendlier and keeps a stolen session alive as long as it is being used."
+
+open question "Should a failed sign-in be recorded? Nothing here observes one, so a credential can be probed without limit. Rate limiting is the usual answer and needs a fact to count."
+
+open question "May one person hold sessions on several accounts at once? Session carries a single account and nothing forbids a second, but no surface exposes switching between them."
