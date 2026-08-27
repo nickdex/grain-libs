@@ -9,11 +9,23 @@
 
    Datastar cannot express this. A signal is a value the server patches;
    a ceremony is a promise the browser must await and whose result it
-   must post back. So this ships as a plain <script type=\"module\"> and
-   the surrounding page is Datastar as usual.
+   must post back.
+
+   IT MUST LOAD FROM <head>, not from the page body. A Datastar page's
+   body arrives as an SSE patch and is applied by DOM morphing, and a
+   <script> element inserted that way never executes -- so a ceremony
+   script sitting in the patched markup silently defines nothing and
+   every button calling it throws ReferenceError into a console nobody
+   is reading. Inline event attributes (onclick) DO survive morphing,
+   which is why the buttons are wired that way.
+
+   One <head> serves every page, so two things are per-call rather than
+   baked in: `next` says where a successful ceremony lands, and autofill
+   is opt-in. A conditional-UI request that fired on load would fire on
+   EVERY page, including for someone already signed in.
 
    Nothing here renders. The application supplies the markup and the
-   element ids, and calls window.grainAuth.{register,signIn} from it."
+   element ids, and calls window.grainAuth.{register,signIn,autofill}."
   (:require [cheshire.core :as json]))
 
 (def default-paths
@@ -28,14 +40,15 @@
    :discover-options "/passkey/discover/options"})
 
 (defn ceremony-script
-  "The module body: `window.grainAuth` with register, signIn, and an
-   autofill attempt that runs on load.
+  "The module body: `window.grainAuth` with register, signIn and
+   autofill. Put it in <head> -- see the ns docstring for why the page
+   body is not an option.
 
    `opts`:
      :paths       overrides for `default-paths`
      :csrf-token  sent as the X-CSRF-Token header on every POST
-     :on-success  a JS expression run after a successful sign-in,
-                  e.g. \"window.location = '/'\"
+     :on-success  fallback JS run after success when a call passes no
+                  `next`, e.g. \"window.location = '/'\"
 
    Returns a string to put inside [:script {:type \"module\"} ...]."
   [{:keys [paths csrf-token on-success]}]
@@ -44,7 +57,11 @@
         q #(json/generate-string %)]
     (str "
 const CSRF = " (q (or csrf-token "")) ";
-const onSuccess = () => { " (or on-success "window.location.reload()") " };
+const fallback = () => { " (or on-success "window.location.reload()") " };
+
+// Where a successful ceremony lands. Per call, because one <head>
+// script serves every page and each has its own next step.
+function go(next) { if (next) { window.location = next; } else { fallback(); } }
 
 async function post(path, body) {
   const res = await fetch(path, {
@@ -59,7 +76,7 @@ async function post(path, body) {
 // which step failed; saying more here would give it back.
 function fail(el, message) { if (el) el.textContent = message; }
 
-async function register(label, statusEl) {
+async function register(label, statusEl, next) {
   fail(statusEl, '');
   const optsRes = await fetch(" (q register-options) ");
   if (!optsRes.ok) { fail(statusEl, 'Could not start registration.'); return; }
@@ -77,15 +94,15 @@ async function register(label, statusEl) {
   const result = await post(" (q register-finish) ",
                             { label: label, credential: credential.toJSON() });
   fail(statusEl, result.ok ? 'Passkey added.' : 'That passkey could not be registered.');
-  if (result.ok) onSuccess();
+  if (result.ok) go(next);
 }
 
-async function finish(credential, statusEl) {
+async function finish(credential, statusEl, next) {
   const result = await post(" (q signin-finish) ", { credential: credential.toJSON() });
-  if (result.ok) { onSuccess(); } else { fail(statusEl, 'That passkey could not be used to sign in.'); }
+  if (result.ok) { go(next); } else { fail(statusEl, 'That passkey could not be used to sign in.'); }
 }
 
-async function signIn(handle, statusEl) {
+async function signIn(handle, statusEl, next) {
   fail(statusEl, '');
   const optsRes = await fetch(" (q signin-options) " + '?handle=' + encodeURIComponent(handle));
   if (!optsRes.ok) { fail(statusEl, 'That passkey could not be used to sign in.'); return; }
@@ -97,14 +114,18 @@ async function signIn(handle, statusEl) {
     fail(statusEl, 'Sign-in was cancelled or did not complete.');
     return;
   }
-  await finish(credential, statusEl);
+  await finish(credential, statusEl, next);
 }
 
-// Usernameless autofill. Feature-detected rather than assumed, and a
-// rejected promise here is the ordinary outcome -- the request is
-// superseded whenever the person does anything else -- so it is not
-// surfaced.
-async function tryConditional() {
+// Usernameless autofill. OPT-IN: this script loads in <head> on every
+// page, and a conditional request that started itself would run on all
+// of them, including for someone already signed in. The sign-in page
+// calls it; nothing else does.
+//
+// Feature-detected rather than assumed, and a rejected promise here is
+// the ordinary outcome -- the request is superseded whenever the person
+// does anything else -- so it is not surfaced.
+async function autofill(next) {
   if (!window.PublicKeyCredential || !PublicKeyCredential.isConditionalMediationAvailable) return;
   if (!(await PublicKeyCredential.isConditionalMediationAvailable())) return;
   const optsRes = await fetch(" (q discover-options) ");
@@ -114,9 +135,8 @@ async function tryConditional() {
   try {
     credential = await navigator.credentials.get({ publicKey: options, mediation: 'conditional' });
   } catch (e) { return; }
-  if (credential) await finish(credential, null);
+  if (credential) await finish(credential, null, next);
 }
 
-window.grainAuth = { register, signIn };
-tryConditional();
+window.grainAuth = { register, signIn, autofill };
 ")))
