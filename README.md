@@ -126,18 +126,54 @@ The matching `complete-` needs it back.
 the ceremony succeeded. A captured assertion replayed later is the thing
 standing between an intercepted ceremony and an account.
 
-Then put the browser half on the page and write your own markup around it:
+### The browser half goes in `<head>`
 
 ```clojure
-[:script {:type "module"}
- (auth/ceremony-script {:csrf-token token :on-success "window.location = '/'"})]
+;; served once, from every page's <head>
+[:script {:type "module" :src "/passkey.js?v=<content-hash>"}]
 ```
 
-That exposes `window.grainAuth.register(label, statusEl)` and
-`window.grainAuth.signIn(handle, statusEl)`, and attempts conditional-UI
-autofill on load. Prefer the discoverable path: `begin-sign-in` has to reveal
-whether an account exists, because the browser needs the credential ids to
-offer, and `begin-discoverable-sign-in` needs no handle at all.
+**Not in the page body.** If your pages stream their markup — Datastar, htmx,
+anything that applies HTML by morphing — a `<script>` element inserted that
+way **never executes**. The script silently defines nothing and every button
+calling it throws `ReferenceError` into a console nobody is reading: the
+button simply does nothing. Inline event *attributes* (`onclick`) do survive
+morphing, which is why that is how the buttons are wired.
+
+`ceremony-script` returns the module body; serve it from a route and stamp the
+URL with a hash of the content, since a generated asset has no file to stat
+and service workers cache by URL.
+
+It exposes:
+
+```js
+window.grainAuth.register(label, statusEl, next)
+window.grainAuth.signIn(handle, statusEl, next)
+window.grainAuth.autofill(next)
+```
+
+`next` is where a successful ceremony lands, and it is **per call** because
+one `<head>` script serves every page and cannot know which one invoked it.
+`:on-success` in the opts is only the fallback when a call passes no `next`.
+
+`autofill` is **opt-in** and does not start itself. From `<head>` a
+self-starting conditional-UI request would fire on every page, including for
+someone already signed in. Call it only from your sign-in page — and note
+that a page whose body is streamed cannot run script on load to do so, which
+is a good reason to serve that one page as plain HTML.
+
+Prefer the discoverable path generally: `begin-sign-in` has to reveal whether
+an account exists, because the browser needs the credential ids to offer, and
+`begin-discoverable-sign-in` needs no handle at all.
+
+### Mounting: keep the ceremony paths free of path params
+
+Some routers — Pedestal's prefix-tree among them — do not backtrack, so a
+path-param segment shadows every static sibling at the same depth. Mounting
+your own `/passkey/:id/remove` beside these makes `/passkey/register/options`,
+`/passkey/signin/options` and `/passkey/discover/options` all 404 at once,
+with no route conflict warning. Put your own parameterised routes under a
+different prefix.
 
 ## What this library does not own
 
