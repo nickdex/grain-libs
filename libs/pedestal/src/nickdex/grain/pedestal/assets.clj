@@ -17,7 +17,8 @@
    a generated asset has no file to stat -- so the content is the stamp."
   (:require [clojure.java.io :as io]
             [nickdex.grain.auth.interface :as auth]
-            [nickdex.grain.push.interface :as push]))
+            [nickdex.grain.push.interface :as push]
+            [ring.util.response :as ring-response]))
 
 (defn- stamp [content] (Integer/toHexString (hash content)))
 
@@ -29,22 +30,56 @@
              "Cache-Control" "public, max-age=31536000, immutable"}
    :body body})
 
-(defn- scripts
-  "The two <head> scripts, generated once per config."
-  [{:keys [paths]}]
-  {:passkey (auth/ceremony-script {})
-   :push (push/client-script {:after (:account paths)})})
+(def ^:private scripts
+  "The two <head> scripts and their stamps.
+
+   Memoised, and not as an optimisation to be tidied away later:
+   head-scripts is called by the Datastar shim on EVERY page render, so
+   without this each request rebuilt several KB of JavaScript and hashed
+   it, to arrive at the same answer it had last time. Keyed on the one
+   input that changes them rather than on the whole config, which carries
+   a datasource and has no business being a cache key."
+  (memoize
+   (fn [after]
+     (let [passkey (auth/ceremony-script {})
+           push (push/client-script {:after after})]
+       {:passkey passkey
+        :push push
+        :passkey-stamp (stamp passkey)
+        :push-stamp (stamp push)}))))
+
+(defn asset-path
+  "A classpath resource path, stamped so a changed file arrives under a
+   changed URL.
+
+   For an application's OWN static files -- a stylesheet, a bundle -- so
+   they invalidate the same way the generated scripts here do. A service
+   worker caches shell assets by URL and serves them without
+   revalidating, which means an unstamped stylesheet is served forever.
+
+   The stamp is the file's last-modified time: it changes exactly when
+   the file does, and costs a stat rather than reading the whole file on
+   every render. An absent resource returns the bare path instead of
+   throwing, because a missing asset should fail as a 404 you can see and
+   not as a 500 during render."
+  [path]
+  (if-some [modified (some-> (io/resource (str "public" path))
+                             ring-response/resource-data
+                             :last-modified
+                             .getTime)]
+    (str path "?v=" (Long/toHexString modified))
+    path))
 
 (defn head-scripts
   "Hiccup <script> tags for the Datastar shim's <head>.
 
    Put them in `:datastar/shim-opts {:head ...}` alongside whatever else
    the application loads there."
-  [config]
-  (let [{:keys [passkey push]} (scripts config)]
+  [{:keys [paths]}]
+  (let [{:keys [passkey-stamp push-stamp]} (scripts (:account paths))]
     (list
-     [:script {:type "module" :src (str "/passkey.js?v=" (stamp passkey))}]
-     [:script {:type "module" :src (str "/push.js?v=" (stamp push))}])))
+     [:script {:type "module" :src (str "/passkey.js?v=" passkey-stamp)}]
+     [:script {:type "module" :src (str "/push.js?v=" push-stamp)}])))
 
 (defn routes
   "Serves /passkey.js, /push.js and a composed /sw.js.
@@ -62,8 +97,8 @@
 
    Omit `:service-worker-shell` and no /sw.js route is produced -- for an
    application that has no service worker, or serves its own."
-  [{:keys [service-worker-shell notification-icon] :as config}]
-  (let [{:keys [passkey push]} (scripts config)]
+  [{:keys [service-worker-shell notification-icon paths]}]
+  (let [{:keys [passkey push]} (scripts (:account paths))]
     (cond-> #{["/passkey.js" :get [(fn [_] (js-response passkey))]
                :route-name ::passkey-script]
               ["/push.js" :get [(fn [_] (js-response push))]

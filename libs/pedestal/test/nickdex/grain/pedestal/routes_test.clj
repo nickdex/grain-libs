@@ -73,6 +73,24 @@
     (is (re-find #"/passkey\.js\?v=[0-9a-f]+" rendered))
     (is (re-find #"/push\.js\?v=[0-9a-f]+" rendered))))
 
+(deftest head-scripts-are-stable-across-calls
+  ;; head-scripts runs on EVERY page render, via the Datastar shim.
+  ;; Before this was memoised each call rebuilt several KB of JavaScript
+  ;; and hashed it, to arrive at the same answer -- and a stamp that
+  ;; changed per render would also defeat caching entirely.
+  (is (= (glue/head-scripts config) (glue/head-scripts config))))
+
+(deftest asset-path-stamps-a-real-file
+  (testing "a resource gets a stamp derived from the file itself"
+    (let [stamped (glue/asset-path "/test-asset.txt")]
+      (is (re-matches #"/test-asset\.txt\?v=[0-9a-f]+" stamped))
+      (is (= stamped (glue/asset-path "/test-asset.txt")))))
+
+  (testing "a missing one returns the bare path rather than throwing"
+    ;; A missing asset should surface as a 404 you can see, not a 500
+    ;; during render.
+    (is (= "/not-here.css" (glue/asset-path "/not-here.css")))))
+
 (deftest the-session-cookie-cannot-be-a-session-cookie
   ;; Without a max-age the browser drops it when the browsing session
   ;; ends, which on an iPhone means whenever iOS terminates the app --

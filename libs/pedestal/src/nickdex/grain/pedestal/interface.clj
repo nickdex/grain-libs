@@ -108,8 +108,15 @@
   assets/routes)
 
 (def head-scripts
-  "Hiccup <script> tags for the Datastar shim's <head>, content-stamped."
+  "Hiccup <script> tags for the Datastar shim's <head>, content-stamped.
+   Called on every page render, so the scripts behind it are memoised."
   assets/head-scripts)
+
+(def asset-path
+  "Stamp one of your OWN static resources so a changed file arrives under
+   a changed URL -- the same invalidation the generated scripts get.
+   Without it a service worker serves a stale stylesheet forever."
+  assets/asset-path)
 
 ;; --- Predicates ---------------------------------------------------
 
