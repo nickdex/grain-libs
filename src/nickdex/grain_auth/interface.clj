@@ -68,6 +68,13 @@
   "Verify a registration response and store the credential."
   ceremony/complete-registration!)
 
+(def complete-registration-and-sign-in!
+  "Verify a registration response, store the credential, and open a
+   session for it -- for enrolment, where the person has no session yet.
+   Making them sign in again immediately after proving possession of the
+   authenticator that just created the key establishes nothing new."
+  ceremony/complete-registration-and-sign-in!)
+
 (def begin-sign-in
   "Start signing in as a named handle. Reveals whether an account exists
    and cannot avoid it -- the browser needs the credential ids to offer.
@@ -134,6 +141,12 @@
    request that has not. Returns an anomaly when the credential is
    unknown or its signature counter did not rise."
   sessions/sign-in!)
+
+(def open-session!
+  "Open a session for a credential WITHOUT a counter check. Only for use
+   immediately after a registration ceremony, which is itself proof of
+   possession."
+  sessions/open!)
 
 (def session
   "The session behind a request, or nil when it has ended or run out."

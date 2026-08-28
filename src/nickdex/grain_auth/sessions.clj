@@ -29,6 +29,40 @@
 (defn- forbidden [message]
   {::anom/category ::anom/forbidden ::anom/message message})
 
+(defn open!
+  "Open a session for a credential WITHOUT a counter check.
+
+   Only for use immediately after a registration ceremony. That ceremony
+   is itself proof of possession -- the authenticator just created this
+   credential on this device -- so re-proving it by assertion adds a tap
+   and nothing else.
+
+   sign-in! cannot serve this case and should not be bent to. A freshly
+   registered credential's stored counter IS the one registration
+   returned, so presenting it again reads as a replay and is refused.
+   That check is right for an assertion and meaningless here.
+
+   Everything else matches sign-in!: same lifetime, same row, same
+   expiry."
+  ([datasource credential-uuid now] (open! datasource credential-uuid now default-lifetime))
+  ([datasource credential-uuid ^Instant now ^Duration lifetime]
+   (jdbc/with-transaction [tx datasource]
+     (when-let [credential (credentials/by-uuid tx credential-uuid)]
+       (let [session-id (random-uuid)
+             expires-at (.plus now lifetime)]
+         (sql/insert! tx :auth_session
+                      {:session_id (str session-id)
+                       :account_id (str (:account-id credential))
+                       :started_at (store/->millis now)
+                       :last_seen_at (store/->millis now)
+                       :expires_at (store/->millis expires-at)}
+                      store/options)
+         {:session-id session-id
+          :account-id (:account-id credential)
+          :started-at now
+          :last-seen-at now
+          :expires-at expires-at})))))
+
 (defn- row->session [row]
   (when row
     (-> row

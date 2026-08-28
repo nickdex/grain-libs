@@ -71,6 +71,21 @@
                            now)
     (forbidden "That passkey could not be registered.")))
 
+(defn complete-registration-and-sign-in!
+  "Verify a registration response, store the credential, and open a
+   session for it. Returns the session, or an anomaly.
+
+   For enrolment, where the person has no session yet. Making them sign
+   in again immediately after proving possession of the authenticator
+   that just created the key is a tap that establishes nothing new."
+  ([config args now] (complete-registration-and-sign-in! config args now sessions/default-lifetime))
+  ([{:keys [datasource] :as config} args ^Instant now lifetime]
+   (let [credential (complete-registration! config args now)]
+     (if (::anom/category credential)
+       credential
+       (or (sessions/open! datasource (:credential-uuid credential) now lifetime)
+           (forbidden "That passkey could not be registered."))))))
+
 ;; ------------------------------------------------------------------
 ;; Signing in
 ;; ------------------------------------------------------------------

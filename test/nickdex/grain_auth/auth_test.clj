@@ -203,6 +203,28 @@
         (auth/session *db* session-id at)
         (is (= at (:last-seen-at (auth/session *db* session-id at))))))))
 
+(deftest opening-a-session-after-registration
+  ;; sign-in! cannot serve this case: a freshly registered credential's
+  ;; stored counter IS the one registration returned, so presenting it
+  ;; again reads as a replay. That check is right for an assertion and
+  ;; meaningless straight after a registration, which is itself proof of
+  ;; possession.
+  (testing "open! mints a session without a counter check"
+    (let [owner (account)
+          uuid (register! owner "cred-1" "Phone" 7)
+          session (auth/open-session! *db* uuid now)]
+      (is (some? session))
+      (is (= owner (:account-id session)))
+      (is (= (.plus now auth/default-session-lifetime) (:expires-at session)))
+      (is (some? (auth/session *db* (:session-id session) now)))))
+
+  (testing "and sign-in! at that same counter would have been refused"
+    (let [uuid (register! (account) "cred-2" "Phone" 7)]
+      (is (anomaly? (sign-in! uuid 7)))))
+
+  (testing "an unknown credential opens nothing"
+    (is (nil? (auth/open-session! *db* (random-uuid) now)))))
+
 (deftest sign-out
   (testing "SignOut: an ended session stops working at once"
     (let [owner (account)
