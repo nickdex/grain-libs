@@ -1,0 +1,24 @@
+{:paths ["src"]
+ :deps  {org.clojure/clojure {:mvn/version "1.12.5"}
+
+         ;; The two libraries this wires up, by relative path inside the
+         ;; monorepo.
+         ;;
+         ;; A CONSUMER SHOULD DEPEND ON THIS LIBRARY ALONE. Declaring
+         ;; grain-auth or grain-push separately as well gives tools.deps
+         ;; two different coordinates for the same lib -- one local, one
+         ;; git -- and it refuses with "No known ancestor relationship
+         ;; between local versions".
+         nickdex/grain-auth {:local/root "../auth"}
+         nickdex/grain-push {:local/root "../push"}
+
+         io.pedestal/pedestal.service {:mvn/version "0.7.2"}
+         ring/ring-core {:mvn/version "1.12.0"}
+         cheshire/cheshire {:mvn/version "5.13.0"}}
+
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps  {io.github.cognitect-labs/test-runner
+                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts   ["-m" "cognitect.test-runner"]
+         :exec-fn     cognitect.test-runner.api/test}}}

@@ -8,6 +8,7 @@ stack. Each is independent, has its own `deps.edn`, and is depended on by
 |---|---|
 | [`libs/auth`](libs/auth) | Passkey authentication: WebAuthn credentials, sessions, and the ceremony. Specified in [`auth.allium`](libs/auth/src/nickdex/grain/auth/auth.allium). |
 | [`libs/push`](libs/push) | Web Push: device subscriptions and delivery. Specified in [`push.allium`](libs/push/src/nickdex/grain/push/push.allium). |
+| [`libs/pedestal`](libs/pedestal) | Both of the above, wired into a Grain + Datastar + Pedestal app: session cookie and interceptor, ceremony routes, browser scripts. |
 
 ```clojure
 nickdex/grain-auth
@@ -20,15 +21,20 @@ Use the **HTTPS** URL, not `git@github.com:`. A Docker build that
 prefetches dependencies has `git` and CA certificates but no SSH keys, so
 an SSH coordinate resolves on your laptop and fails in CI.
 
-## The libraries do not depend on each other
+## Which one to depend on
+
+`libs/pedestal` brings `auth` and `push` with it. **Depend on it alone.**
+Declaring `grain-auth` or `grain-push` separately as well gives
+tools.deps two coordinates for one lib -- one local, one git -- and it
+refuses with `No known ancestor relationship between local versions`.
+
+Take `auth` or `push` directly only if you are not on Pedestal, or want
+one without the other and will do your own wiring.
+
+## auth and push do not depend on each other
 
 `push` takes an opaque account id, so an application can have
-notifications without passkeys. That independence is also a hard
-constraint rather than a preference: two `:deps/root` entries from one
-repository that share a vendored component fail to resolve with
-`No known ancestor relationship between local versions`. Anything shared
-between libraries has to become a third library both depend on, or be
-duplicated deliberately.
+notifications without passkeys, and the two are proven independently.
 
 ## What they own, and what they do not
 
