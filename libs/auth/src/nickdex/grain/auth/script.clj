@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.script
+(ns nickdex.grain.auth.script
   "The browser half of the ceremony.
 
    This is here rather than in the application because it is not a

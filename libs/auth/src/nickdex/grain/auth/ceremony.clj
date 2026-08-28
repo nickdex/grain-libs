@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.ceremony
+(ns nickdex.grain.auth.ceremony
   "The five steps of a passkey ceremony, joined to the store.
 
    Deliberately framework-free: every function takes data and returns
@@ -16,9 +16,9 @@
    intercepted ceremony and an account, so the application must discard
    the stash on completion whether or not the ceremony succeeded."
   (:require [cognitect.anomalies :as anom]
-            [nickdex.grain-auth.credentials :as credentials]
-            [nickdex.grain-auth.sessions :as sessions]
-            [nickdex.grain-auth.webauthn :as webauthn])
+            [nickdex.grain.auth.credentials :as credentials]
+            [nickdex.grain.auth.sessions :as sessions]
+            [nickdex.grain.auth.webauthn :as webauthn])
   (:import [java.time Instant]))
 
 (defn- forbidden [message]

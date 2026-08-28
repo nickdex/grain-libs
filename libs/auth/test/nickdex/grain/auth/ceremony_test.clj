@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.ceremony-test
+(ns nickdex.grain.auth.ceremony-test
   "Tests for the WebAuthn ceremony seam.
 
    What is NOT here: a ceremony that succeeds. Producing one needs a real
@@ -16,8 +16,8 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [cognitect.anomalies :as anom]
             [next.jdbc :as jdbc]
-            [nickdex.grain-auth.interface :as auth]
-            [nickdex.grain-auth.webauthn :as webauthn])
+            [nickdex.grain.auth.interface :as auth]
+            [nickdex.grain.auth.webauthn :as webauthn])
   (:import [java.time Instant]))
 
 (def now (Instant/parse "2026-08-26T09:00:00Z"))

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run every library's tests.
+#
+# Each lib carries its own deps.edn and is tested from its own directory.
+# There is deliberately no aggregate classpath: two :deps/root entries
+# from this repo that shared a vendored component would fail to resolve
+# with "no known ancestor relationship between local versions", so the
+# libs stay independent and are proven independently.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+status=0
+for lib in libs/*/; do
+  echo "==> $(basename "$lib")"
+  (cd "$lib" && clj -M:test) || status=1
+done
+exit $status

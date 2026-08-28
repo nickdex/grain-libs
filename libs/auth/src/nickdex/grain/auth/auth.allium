@@ -2,7 +2,7 @@
 -- auth.allium
 
 -- Scope: passkey authentication for a Grain + Datastar application
---   (lab/grain-auth/)
+--   (grain-libs/libs/auth/)
 -- WebAuthn credentials, the sessions they open, and the management of
 -- both. This is a library spec: it governs credentials and sessions and
 -- knows nothing about the person behind them.

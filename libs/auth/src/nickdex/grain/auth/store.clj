@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.store
+(ns nickdex.grain.auth.store
   "The two tables auth.allium's Credential and Session entities live in,
    and the migration that creates them.
 

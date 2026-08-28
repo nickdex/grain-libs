@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.credentials
+(ns nickdex.grain.auth.credentials
   "auth.allium's Credential: registering a passkey, looking one up,
    renaming it, and removing it.
 
@@ -13,7 +13,7 @@
             [cognitect.anomalies :as anom]
             [next.jdbc :as jdbc]
             [next.jdbc.sql :as sql]
-            [nickdex.grain-auth.store :as store])
+            [nickdex.grain.auth.store :as store])
   (:import [java.time Instant]))
 
 (defn- incorrect [message]

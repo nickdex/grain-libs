@@ -1,0 +1,272 @@
+-- allium: 3
+-- notifications.allium
+
+-- Scope: push notifications to a person's devices
+--   (src/nickdex/smriti/notifications/)
+-- A device is one browser install that agreed to be notified. This spec
+-- is about keeping that list honest: adding a device, removing one, and
+-- retiring the ones the push service says are gone.
+--
+-- What is worth notifying about is still not decided here. The first
+-- reason to notify -- a daily nudge when nothing has been written -- is
+-- a separate concern that will own its own decision and its own record;
+-- this spec carries the message rather than choosing it.
+--
+-- Includes: subscribing a device, re-subscribing it, unsubscribing, and
+--           retiring a subscription the push service has dropped
+-- Excludes:
+--   - Why and when to notify. No trigger, no schedule, no reminder. A
+--     daily nudge is the intended first caller and is specified apart
+--     from this, because a device list has to be right before anything
+--     is worth sending to it
+--   - Notification content, per-device preferences, quiet hours,
+--     grouping, badges
+--   - The subscription's encryption keys. They are how a payload is
+--     sealed for one browser; nobody outside the sender cares which
+--     they are, and putting them here would describe the transport
+--   - VAPID, the push service's HTTP contract, retry and backoff.
+--     External, and named only through the PushChannel contract
+--   - Any channel that is not a browser push: email, SMS
+--   - Whether a notification was read, or what happened when it was
+--     tapped
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+-- Governed by identity.allium. Nothing here reads a field on it; a
+-- device belongs to a person and that is all this spec needs.
+external entity Account {}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract PushChannel {
+    deliver: (device: Device, message: String) -> Boolean
+
+    @invariant PermanentRejectionIsReportedAsGone
+        -- A subscription the service rejects permanently results in
+        -- PushRejectedAsGone. Reporting it more than once is harmless;
+        -- not reporting it leaves a dead device on the list forever and
+        -- every later send pays for it.
+
+    @invariant TransientFailureIsNotGone
+        -- Only a permanent rejection counts. A timeout, a server error
+        -- or a rate limit is the service being unavailable, not the
+        -- subscription being gone -- retiring on one of those
+        -- unsubscribes a device that still works, silently, and the
+        -- person finds out by never being notified again.
+
+    @invariant OneDeviceAtATime
+        -- Delivery is per device. There is no broadcast: a message to a
+        -- person is a message to each of their devices, and one failing
+        -- says nothing about the others.
+
+    @guidance
+        -- Web Push: a signed request per device, with the message
+        -- encrypted to that subscription's own keys so the push service
+        -- forwards something it cannot read. Permanently gone is what
+        -- the service says with 404 or 410.
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Device {
+    account: Account
+
+    -- Where the push service accepts messages for this browser install.
+    -- Issued by the service, not chosen here, and it is what identifies
+    -- the subscription: two devices cannot share one.
+    endpoint: String
+
+    -- What the person calls this device. Filled in from the browser at
+    -- subscribe time, because asking before anything works is a form
+    -- between wanting notifications and having them -- and then theirs
+    -- to correct, because "Chrome on Android" does not tell two Android
+    -- phones apart.
+    label: String
+
+    created_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule SubscribeDevice {
+    when: SubscribeDevice(account, endpoint, label)
+
+    requires: label != ""
+    requires: not exists Device{endpoint: endpoint}
+
+    ensures:
+        Device.created(
+            account: account,
+            endpoint: endpoint,
+            label: label,
+            created_at: now,
+        )
+}
+
+rule ResubscribeDevice {
+    when: SubscribeDevice(account, endpoint, label)
+
+    let existing = Device{endpoint: endpoint}
+
+    requires: exists existing
+    requires: label != ""
+
+    ensures:
+        existing.account = account
+        existing.label = label
+
+    @guidance
+        -- A browser re-subscribing hands back the endpoint it already
+        -- has, so the ordinary repeat is not an error and must not
+        -- create a second device. Same trigger as SubscribeDevice, told
+        -- apart by whether the endpoint is already known.
+        --
+        -- The account is reassigned rather than defended, because an
+        -- endpoint that comes back under a different account means the
+        -- browser was signed out and signed in as someone else. Leaving
+        -- it on the first account would send that person's
+        -- notifications to whoever holds the device now.
+}
+
+rule RenameDevice {
+    when: RenameDevice(device, label)
+
+    requires: exists device
+    requires: label != ""
+
+    ensures: device.label = label
+
+    @guidance
+        -- The label is the only thing that makes one device
+        -- recognisable among several, so it may not be blanked. Same
+        -- shape as renaming a passkey, and for the same reason.
+}
+
+rule UnsubscribeDevice {
+    when: UnsubscribeDevice(device)
+
+    requires: exists device
+
+    ensures: not exists device
+
+    @guidance
+        -- Gone, not flagged -- the same choice journal.allium makes for
+        -- a deleted entry. A subscription that has been turned off has
+        -- no history worth keeping, and keeping it would mean every
+        -- send has to remember to skip it.
+}
+
+rule RetireGoneDevice {
+    when: PushRejectedAsGone(device)
+
+    requires: exists device
+
+    ensures: not exists device
+
+    @guidance
+        -- The translate step: the push service saying a subscription no
+        -- longer exists, turned into a fact here. This is what keeps the
+        -- list from filling with browsers that were uninstalled, had
+        -- their site data cleared, or simply expired.
+        --
+        -- Distinct from UnsubscribeDevice even though the outcome is the
+        -- same. One is a person deciding; the other is a service
+        -- reporting. Collapsing them would make a delivery failure
+        -- indistinguishable from a choice, and only one of those should
+        -- ever be second-guessed.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant EndpointIdentifiesOneDevice {
+    for d in Devices:
+        (Devices where endpoint = d.endpoint).count = 1
+}
+
+invariant DeviceIsLabelled {
+    for d in Devices:
+        d.label != ""
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface DeviceManagement {
+    context owner: Account
+
+    exposes:
+        for d in Devices where account = owner:
+            d.label
+            d.created_at
+
+    provides:
+        SubscribeDevice(owner, endpoint, label)
+        RenameDevice(device, label)
+        UnsubscribeDevice(device)
+
+    @guarantee EndpointIsNeverShown
+        -- What is shown is the label and when it was added. An endpoint
+        -- is a capability, not a name: anyone holding it, with the
+        -- keys, can push to that browser, so it does not belong on a
+        -- screen or in a URL.
+
+    @guarantee PermissionIsAskedForOnce
+        -- Subscribing is offered only where the person asked for it. A
+        -- browser that is asked on arrival and refused cannot easily be
+        -- asked again, so an unprompted request spends the only chance
+        -- there is.
+
+    @guidance
+        -- The list is per browser install, not per machine: the same
+        -- laptop in two browsers is two devices, and there is no way to
+        -- tell from here that they are the same laptop. That is why the
+        -- label matters -- it is the only thing that makes an entry
+        -- recognisable to the person who created it.
+}
+
+surface PushDelivery {
+    context device: Device
+
+    exposes:
+        device.endpoint
+
+    provides:
+        PushRejectedAsGone(device)
+
+    contracts:
+        demands PushChannel
+
+    @guarantee NothingIsSentThatWasNotAskedFor
+        -- Every message crossing here corresponds to something the
+        -- person asked to be told about. This surface has no opinion on
+        -- what that is; it only refuses to be a general-purpose way to
+        -- reach a device.
+
+    @guidance
+        -- The only surface where an endpoint is legitimately read,
+        -- because sending is the one thing it is for.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+-- Answered: the label is derived from the user agent at subscribe time
+-- and editable afterwards. See RenameDevice.
+
+open question "What happens when a push arrives and the app is already open on that device? Nothing here distinguishes them, so the same message is delivered whether or not the person is looking at the page it concerns."
+
+open question "Is there a limit on how many devices one account may have? Nothing caps it. Each one costs a request per send, and a subscription that is never used is only removed when the push service reports it gone."
+
+open question "Should a delivery failure that is not permanent be recorded? PushChannel says a transient failure is not gone, but nothing observes it, so a device that fails every send indefinitely looks exactly like one that works. Worth revisiting once something actually sends."

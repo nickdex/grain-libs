@@ -1,8 +1,8 @@
-(ns nickdex.grain-auth.webauthn
+(ns nickdex.grain.auth.webauthn
   "WebAuthn ceremony mechanics, via com.yubico/webauthn-server-core.
 
    Verification only. Every function here returns plain data and persists
-   nothing -- deciding what to write is nickdex.grain-auth.ceremony's
+   nothing -- deciding what to write is nickdex.grain.auth.ceremony's
    job. `credential-repository` is the exception that has to read, and it
    cannot move up a layer: Yubico's RelyingParty calls its methods
    synchronously from inside its own ceremony logic.
@@ -29,7 +29,7 @@
    to a person choosing between keys, so \"Nikhil Warke\" belongs there
    and an email address belongs in the handle."
   (:require [cheshire.core :as json]
-            [nickdex.grain-auth.credentials :as credentials])
+            [nickdex.grain.auth.credentials :as credentials])
   (:import [com.yubico.webauthn AssertionRequest CredentialRepository
             FinishAssertionOptions FinishRegistrationOptions
             RegisteredCredential RelyingParty StartAssertionOptions

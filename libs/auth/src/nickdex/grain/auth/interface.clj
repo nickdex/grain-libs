@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.interface
+(ns nickdex.grain.auth.interface
   "Passkey authentication for a Grain + Datastar application. Behaviour is
    specified in auth.allium; this is its public surface.
 
@@ -28,11 +28,11 @@
    where `datasource` is a pool on the same SQLite file the event store
    uses. Tables are prefixed `auth_`, so an existing backup script covers
    them without being told about them."
-  (:require [nickdex.grain-auth.ceremony :as ceremony]
-            [nickdex.grain-auth.credentials :as credentials]
-            [nickdex.grain-auth.script :as script]
-            [nickdex.grain-auth.sessions :as sessions]
-            [nickdex.grain-auth.store :as store]))
+  (:require [nickdex.grain.auth.ceremony :as ceremony]
+            [nickdex.grain.auth.credentials :as credentials]
+            [nickdex.grain.auth.script :as script]
+            [nickdex.grain.auth.sessions :as sessions]
+            [nickdex.grain.auth.store :as store]))
 
 ;; --- Schema -------------------------------------------------------
 

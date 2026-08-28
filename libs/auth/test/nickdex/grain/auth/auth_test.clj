@@ -1,8 +1,8 @@
-(ns nickdex.grain-auth.auth-test
+(ns nickdex.grain.auth.auth-test
   "Tests propagated from auth.allium.
 
    Every `testing` string opens with the Allium obligation it discharges
-   (`allium plan src/nickdex/grain_auth/auth.allium`), so a failing run
+   (`allium plan src/nickdex/grain/auth/auth.allium`), so a failing run
    names the spec clause that broke rather than just the group it sat in.
 
    The seam is the real thing minus the file: a real SQLite database, the
@@ -15,7 +15,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [cognitect.anomalies :as anom]
             [next.jdbc :as jdbc]
-            [nickdex.grain-auth.interface :as auth])
+            [nickdex.grain.auth.interface :as auth])
   (:import [java.time Duration Instant]))
 
 (def now (Instant/parse "2026-08-26T09:00:00Z"))

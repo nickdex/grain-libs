@@ -1,4 +1,4 @@
-(ns nickdex.grain-auth.sessions
+(ns nickdex.grain.auth.sessions
   "auth.allium's Session: opening one after a verified assertion, reading
    it back on every request, and ending it here or on another device.
 
@@ -13,8 +13,8 @@
   (:require [cognitect.anomalies :as anom]
             [next.jdbc :as jdbc]
             [next.jdbc.sql :as sql]
-            [nickdex.grain-auth.credentials :as credentials]
-            [nickdex.grain-auth.store :as store])
+            [nickdex.grain.auth.credentials :as credentials]
+            [nickdex.grain.auth.store :as store])
   (:import [java.time Duration Instant]))
 
 (def default-lifetime
