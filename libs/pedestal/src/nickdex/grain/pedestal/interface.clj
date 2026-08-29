@@ -122,6 +122,30 @@
    Without it a service worker serves a stale stylesheet forever."
   assets/asset-path)
 
+;; --- Reading, for an account page ---------------------------------
+;;
+;; Re-exported so a consuming application needs ONE require as well as
+;; one dependency. The routes that change these rows live here, so the
+;; reads that render them belong at the same seam -- reaching past this
+;; namespace into grain-auth would be depending on something the app
+;; never declared.
+
+(def credentials-for-account
+  "Every passkey on an account, oldest first. Labels, dates and the
+   surrogate uuid the rename and remove routes take -- never the
+   credential id or public key."
+  auth/credentials-for-account)
+
+(def sessions-for-account
+  "Every live session on an account. Pair with `session-of` to mark the
+   one being used to read the list."
+  auth/sessions-for-account)
+
+(def devices-for-account
+  "Every push subscription on an account. Carries a fingerprint of the
+   endpoint rather than the endpoint, which is a capability."
+  push/for-account)
+
 ;; --- Predicates ---------------------------------------------------
 
 (def signed-in?
