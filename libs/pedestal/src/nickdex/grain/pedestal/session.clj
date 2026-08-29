@@ -10,6 +10,36 @@
   (:import [java.security MessageDigest]
            [java.time Instant]))
 
+(defn secret-string
+  "The secret as a string, or a refusal to start.
+
+   `force` first, because Biff wraps a `#biff/secret` config value in a
+   delay -- and that delay's toString is the FIXED string
+   \"#<SecretDelay: redacted>\". An application passing the wrapped value
+   straight through therefore derives every key in this library from a
+   public constant, and nothing looks wrong: cookies encrypt, sessions
+   resolve, sign-in works. It is only not secret. `force` on a plain
+   string is identity, so both shapes arrive here correctly.
+
+   Then insist on a non-blank String. nil is the other trap -- Biff's
+   config drops keys whose env var is unset, so a missing COOKIE_SECRET
+   arrives as nil and hashes to a constant just as happily.
+
+   This is called from `session-config`, which runs once at boot, so a
+   badly wired secret is a process that will not start rather than a
+   silent weakening nobody sees."
+  ^String [secret]
+  (let [value (force secret)]
+    (if (and (string? value) (not (.isBlank ^String value)))
+      value
+      (throw (ex-info
+              (str "The session secret must be a non-blank string, but was: "
+                   (if (nil? value) "nil" (.getName (class value)))
+                   ". With Biff, a #biff/secret config value is a delay -- pass "
+                   "(force secret), or ((:biff/secret ctx) :biff.ring/cookie-secret). "
+                   "Passing the wrapped delay derives this key from a constant.")
+              {:type (some-> value class .getName)})))))
+
 (defn cookie-key
   "A 16-byte key for ring's cookie store, derived from a secret.
 
@@ -18,7 +48,8 @@
    was generated. SHA-256 makes that a non-question."
   ^bytes [secret]
   (java.util.Arrays/copyOf
-   (.digest (MessageDigest/getInstance "SHA-256") (.getBytes (str secret) "UTF-8"))
+   (.digest (MessageDigest/getInstance "SHA-256")
+            (.getBytes (secret-string secret) "UTF-8"))
    16))
 
 (defn session-config

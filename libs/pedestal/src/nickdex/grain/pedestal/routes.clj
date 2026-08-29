@@ -32,7 +32,6 @@
   (:require [cheshire.core :as json]
             [io.pedestal.http.body-params :as body-params]
             [nickdex.grain.auth.interface :as auth]
-            [nickdex.grain.pedestal.enrolment :as enrolment]
             [nickdex.grain.push.interface :as push])
   (:import [java.time Instant]))
 
@@ -59,22 +58,45 @@
 ;; Enrolment
 ;; ------------------------------------------------------------------
 
-(defn- enrol-claim-handler [{:keys [cookie-secret paths] :as config}]
+(defn- enrol-verify-handler
+  "Exchanges a handle and a six-digit code for permission to register one
+   passkey.
+
+   A form post rather than a link. The link this replaced was a bearer
+   credential sitting in a URL -- forwardable, screenshottable, kept in
+   history, and impossible to read down a phone. A code is none of those,
+   and grain-auth burns it after five wrong guesses.
+
+   The grant lands in the session rather than being re-proved at each
+   step of the ceremony, because the code is consumed the moment it
+   verifies. The session cookie is encrypted, which is what makes that
+   safe -- see `session/secret-string` for the trap that quietly made it
+   not so."
+  [{:keys [paths] :as config}]
   (fn [request]
-    (if-let [account-id (enrolment/account config cookie-secret
-                                           (get-in request [:query-params :token])
-                                           (Instant/now))]
-      (assoc (redirect (:enrol paths))
-             :session (assoc (:session request) :grain.pedestal/enrolling account-id))
-      (redirect (str (:sign-in paths) "?enrolment=expired")))))
+    (let [{:keys [handle code]} (:form-params request)]
+      (if-let [account-id (auth/verify-enrolment-code!
+                           (ceremony-config config) handle code (Instant/now))]
+        (assoc (redirect (:enrol paths))
+               :session (assoc (:session request) :grain.pedestal/enrolling account-id))
+        ;; One refusal for a handle nobody holds, a code never issued, a
+        ;; wrong one, an expired one, one guessed at too often, and an
+        ;; account already enrolled.
+        (redirect (str (:enrol paths) "?error=invalid-code"))))))
 
 (defn- registering-for
-  "The account a registration may act on: the signed-in one, or the one
-   an enrolment link named. These are the only two ways a key is ever
-   added, and an account id in a request body is never one of them."
-  [request]
+  "The account a registration may act on: the signed-in one, or the one a
+   verified enrolment code named. These are the only two ways a key is
+   ever added, and an account id in a request body is never one of them.
+
+   The enrolling grant is re-checked against the account rather than
+   trusted for the life of the session: a code that verified before any
+   key existed must not still be usable once one does."
+  [{:keys [datasource]} request]
   (or (account-of request)
-      (get-in request [:session :grain.pedestal/enrolling])))
+      (when-let [enrolling (get-in request [:session :grain.pedestal/enrolling])]
+        (when (empty? (auth/credentials-for-account datasource enrolling))
+          enrolling))))
 
 ;; ------------------------------------------------------------------
 ;; Registering a key
@@ -82,7 +104,7 @@
 
 (defn- register-options-handler [config]
   (fn [request]
-    (if-let [account-id (registering-for request)]
+    (if-let [account-id (registering-for config request)]
       (let [{:keys [options-json pending]}
             (auth/begin-registration (ceremony-config config) {:account-id account-id})]
         (-> (json-response 200 nil (assoc (:session request)
@@ -101,7 +123,7 @@
   [config]
   (fn [request]
     (let [enrolling (get-in request [:session :grain.pedestal/enrolling])
-          account-id (registering-for request)
+          account-id (registering-for config request)
           pending (get-in request [:session :grain.pedestal/pending])
           {:keys [credential label]} (:json-params request)
           args {:pending pending
@@ -282,16 +304,21 @@
    Union this with the application's own routes, then run the whole thing
    through `session/with-session`."
   [config]
-  (let [json-body (body-params/body-params)]
-    #{["/enrol/claim" :get [(enrol-claim-handler config)] :route-name ::enrol-claim]
+  (let [;; One interceptor for both shapes: the ceremony posts JSON, the
+        ;; enrolment and rename forms post urlencoded, and body-params
+        ;; dispatches on Content-Type. Form keys arrive keywordized.
+        parse-body (body-params/body-params)]
+    #{;; A POST, and not a link. See enrol-verify-handler.
+      ["/enrol/verify" :post [parse-body (enrol-verify-handler config)]
+       :route-name ::enrol-verify]
 
       ["/passkey/register/options" :get [(register-options-handler config)]
        :route-name ::register-options]
-      ["/passkey/register/finish" :post [json-body (register-finish-handler config)]
+      ["/passkey/register/finish" :post [parse-body (register-finish-handler config)]
        :route-name ::register-finish]
       ["/passkey/signin/options" :get [(signin-options-handler config)]
        :route-name ::signin-options]
-      ["/passkey/signin/finish" :post [json-body (signin-finish-handler config)]
+      ["/passkey/signin/finish" :post [parse-body (signin-finish-handler config)]
        :route-name ::signin-finish]
       ["/passkey/discover/options" :get [(discover-options-handler config)]
        :route-name ::discover-options]
@@ -299,15 +326,15 @@
 
       ["/credential/:credential-uuid/remove" :post [(remove-credential-handler config)]
        :route-name ::remove-credential]
-      ["/credential/:credential-uuid/rename" :post [json-body (rename-credential-handler config)]
+      ["/credential/:credential-uuid/rename" :post [parse-body (rename-credential-handler config)]
        :route-name ::rename-credential]
       ["/session/:session-id/signout" :post [(end-session-handler config)]
        :route-name ::end-session]
 
       ["/push/key" :get [(push-key-handler config)] :route-name ::push-key]
-      ["/push/subscribe" :post [json-body (subscribe-handler config)]
+      ["/push/subscribe" :post [parse-body (subscribe-handler config)]
        :route-name ::push-subscribe]
-      ["/device/:device-id/rename" :post [json-body (rename-device-handler config)]
+      ["/device/:device-id/rename" :post [parse-body (rename-device-handler config)]
        :route-name ::rename-device]
       ["/device/:device-id/unsubscribe" :post [(unsubscribe-handler config)]
        :route-name ::unsubscribe-device]}))

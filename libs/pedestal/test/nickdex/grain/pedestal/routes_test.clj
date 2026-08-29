@@ -7,7 +7,11 @@
    actually gone wrong."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [nickdex.grain.pedestal.interface :as glue]))
+            [nickdex.grain.pedestal.interface :as glue]
+            ;; cookie-key is internal -- not something a consuming app
+            ;; calls -- but it is where the secret is turned into a key,
+            ;; so it is where the secret's shape has to be pinned.
+            [nickdex.grain.pedestal.session :as session]))
 
 (def config
   {:datasource nil
@@ -51,6 +55,16 @@
                "and sometimes static: " seen
                " -- the parameter shadows the static ones")))))
 
+(deftest enrolment-is-a-form-post-not-a-link
+  ;; The link it replaced was a bearer credential in a URL: forwardable,
+  ;; screenshottable, kept in history, and impossible to read down a
+  ;; phone. A code is none of those.
+  (let [routes (glue/routes config)
+        by-path (into {} (map (fn [r] [(first r) (second r)])) routes)]
+    (is (= :post (get by-path "/enrol/verify")))
+    (is (not (contains? by-path "/enrol/claim"))
+        "the signed-link route must not linger beside the code one")))
+
 (deftest every-route-is-uniquely-named
   ;; Pedestal keys routes by name; a duplicate silently wins over the
   ;; other.
@@ -90,6 +104,35 @@
     ;; A missing asset should surface as a 404 you can see, not a 500
     ;; during render.
     (is (= "/not-here.css" (glue/asset-path "/not-here.css")))))
+
+(deftest the-session-secret-must-really-be-a-secret
+  ;; Biff wraps a #biff/secret config value in a delay whose toString is
+  ;; the FIXED string "#<SecretDelay: redacted>". Passing that wrapper
+  ;; through derived every cookie key from a public constant, and nothing
+  ;; looked wrong -- cookies encrypted, sessions resolved, sign-in
+  ;; worked. It was only not secret.
+  (testing "a delay is forced, so a Biff secret gives the key its value would"
+    (is (java.util.Arrays/equals
+         (session/cookie-key "s3kr1t")
+         (session/cookie-key (delay "s3kr1t")))))
+
+  (testing "two secrets give two keys"
+    ;; THE property the bug broke, and the one a "is it 16 bytes?" test
+    ;; sails straight past: under the bug both of these were equal.
+    (is (not (java.util.Arrays/equals (session/cookie-key "one")
+                                      (session/cookie-key "two")))))
+
+  (testing "anything that is not a non-blank string is refused"
+    ;; nil is the live case: Biff drops config keys whose env var is
+    ;; unset, so a missing COOKIE_SECRET arrives as nil and would hash
+    ;; just as happily as any other constant.
+    (doseq [bad [nil "" "   " 42 (delay nil) {:not "a secret"}]]
+      (is (thrown? clojure.lang.ExceptionInfo (session/cookie-key bad))
+          (str "accepted " (pr-str bad)))))
+
+  (testing "and session-config refuses at boot rather than at first request"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (glue/session-config (assoc config :cookie-secret nil))))))
 
 (deftest the-session-cookie-cannot-be-a-session-cookie
   ;; Without a max-age the browser drops it when the browsing session

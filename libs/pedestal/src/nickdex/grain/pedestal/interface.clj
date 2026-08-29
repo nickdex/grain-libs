@@ -17,6 +17,11 @@
    - The session cookie needs a max-age. Without one iOS drops it
      whenever it terminates the app, and every return mints a new
      session while the old row lives on.
+   - :cookie-secret must be the STRING, not Biff's #biff/secret wrapper.
+     That wrapper's toString is a fixed public constant, so passing it
+     through derives the cookie key from something anyone can compute --
+     and everything still appears to work. This library now refuses to
+     start rather than accept one.
    - ::http/enable-csrf cannot be turned on: Datastar's own posts carry
      no token. SameSite=Lax is what stands in.
 
@@ -30,7 +35,7 @@
    One map, built by the application:
 
      {:datasource        ds          ; a pool on your SQLite file
-      :cookie-secret     \"...\"       ; also derives the enrolment key
+      :cookie-secret     \"...\"       ; a non-blank string, NOT a Biff delay
       :origin            \"https://example.com\"   ; the relying party
       :app-name          \"Example\"
       :secure?           true        ; false only on plain-HTTP localhost
@@ -66,7 +71,6 @@
    on a session, which would go stale the moment one changed."
   (:require [nickdex.grain.auth.interface :as auth]
             [nickdex.grain.pedestal.assets :as assets]
-            [nickdex.grain.pedestal.enrolment :as enrolment]
             [nickdex.grain.pedestal.routes :as routes]
             [nickdex.grain.pedestal.session :as session]
             [nickdex.grain.push.interface :as push]))
@@ -150,13 +154,35 @@
 
 ;; --- Enrolment ----------------------------------------------------
 
-(def enrolment-token
-  "A one-shot link letting a new account register its first passkey.
+(def enrolment-code!
+  "Mint the six-digit code a new account needs to register its first
+   passkey. Returns {:code :expires-at} once, in the clear.
 
-   A BEARER CREDENTIAL for its lifetime: whoever opens it can put their
-   key on that account, with no second factor behind it. Send it over
-   something you trust. It stops working the moment the account has a
-   key, so the person using it closes the window themselves."
-  enrolment/token)
+   Hand it over however you like -- read down a phone, typed into a
+   message. It names nothing and can be spoken, which the signed link
+   this replaced could not. grain-auth stores only a hash, expires it
+   after an hour and burns it after five wrong guesses.
 
-(def enrolment-lifetime enrolment/default-lifetime)
+   The person enters their handle and the code at your :enrol page,
+   which posts them to /enrol/verify."
+  auth/issue-enrolment-code!)
+
+(def enrolment-lifetime auth/enrolment-lifetime)
+
+(def revoke-enrolment-code!
+  "Revoke an outstanding code. Idempotent."
+  auth/clear-enrolment-code!)
+
+(def enrolment-pending?
+  "Whether an account has a code that could still be used. For an
+   operator listing, not for a decision on the request path."
+  auth/enrolment-pending?)
+
+(def reset-credentials!
+  "Remove every passkey and session on an account so a fresh code can
+   enrol it again -- the way back from losing every device.
+
+   Operator-only by construction: it is on no route, and no code can
+   trigger it. It turns an account somebody holds into an account
+   whoever gets the next code holds, so it wants a human behind it."
+  auth/reset-credentials!)
