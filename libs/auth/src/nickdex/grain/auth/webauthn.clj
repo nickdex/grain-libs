@@ -29,6 +29,7 @@
    to a person choosing between keys, so \"Nikhil Warke\" belongs there
    and an email address belongs in the handle."
   (:require [cheshire.core :as json]
+            [com.brunobonacci.mulog :as u]
             [nickdex.grain.auth.credentials :as credentials])
   (:import [com.yubico.webauthn AssertionRequest CredentialRepository
             FinishAssertionOptions FinishRegistrationOptions
@@ -212,7 +213,17 @@
       {:credential-id (.getBase64Url (.getId (.getKeyId result)))
        :public-key    (.getBase64Url (.getPublicKeyCose result))
        :sign-count    (.getSignatureCount result)})
-    (catch Exception _ nil)))
+    (catch Exception e
+      ;; Uniform to the CALLER, specific in the LOG. The browser must not
+      ;; learn which check failed; the operator has to. Yubico's message
+      ;; names it exactly -- "Incorrect origin", "Incorrect challenge" --
+      ;; and swallowing that made a misconfigured base URL a failure with
+      ;; no evidence anywhere. The configured origin is logged beside it,
+      ;; because the whole question is which two strings disagree.
+      (u/log ::registration-failed
+             :reason (ex-message e)
+             :configured-origin (normalise-origin (:origin config)))
+      nil)))
 
 ;; ------------------------------------------------------------------
 ;; Assertion (sign-in)
@@ -276,4 +287,8 @@
         {:handle        (.getUsername result)
          :credential-id (.getBase64Url (.getCredentialId result))
          :sign-count    (.getSignatureCount result)}))
-    (catch Exception _ nil)))
+    (catch Exception e
+      (u/log ::assertion-failed
+             :reason (ex-message e)
+             :configured-origin (normalise-origin (:origin config)))
+      nil)))

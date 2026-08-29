@@ -12,6 +12,7 @@
    is where the mistakes this library could make actually live, and where
    a uniform rejection message has to be checked rather than assumed."
   (:require [cheshire.core :as json]
+            [com.brunobonacci.mulog.core :as mulog.core]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [cognitect.anomalies :as anom]
@@ -245,3 +246,31 @@
                                     :datasource nil})]
     (is (= #{"https://example.com:8080"} (set (.getOrigins rp))))
     (is (= "example.com" (.getId (.getIdentity rp))))))
+
+(deftest a-failed-ceremony-tells-the-LOG-what-it-will-not-tell-the-BROWSER
+  ;; The refusal is uniform on purpose: which check failed must not reach
+  ;; whoever asked, or the ceremony becomes a way to probe. That reasoning
+  ;; does not extend to the server's own log, and for a long time this
+  ;; caught every exception as `_` -- so a misconfigured origin produced a
+  ;; failure with no evidence anywhere, on either side.
+  ;;
+  ;; Captured at mulog's core/log*, because u/log is a macro and has
+  ;; already expanded past anything with-redefs could reach.
+  (let [events (atom [])]
+    (with-redefs [mulog.core/log* (fn [_logger event-name pairs]
+                                    (swap! events conj [event-name (apply hash-map pairs)])
+                                    nil)]
+      (let [result (webauthn/verify-registration
+                    {:origin "https://example.com/" :app-name "Example" :datasource nil}
+                    {:pending "not-json" :credential-json "not-json"})]
+
+        (testing "the caller still learns nothing"
+          (is (nil? result)))
+
+        (let [[event-name logged] (first @events)]
+          (testing "but the log names the failure"
+            (is (= ::webauthn/registration-failed event-name))
+            (is (seq (str (:reason logged)))))
+
+          (testing "and the origin it was comparing against -- the whole question"
+            (is (= "https://example.com" (:configured-origin logged)))))))))

@@ -20,7 +20,16 @@
          ;; Grain app already has this namespace via Grain's own
          ;; anomalies component; declared here so the library resolves
          ;; standalone, and the artifact is the same one Grain vendors.
-         com.cognitect/anomalies {:mvn/version "0.1.12"}}
+         com.cognitect/anomalies {:mvn/version "0.1.12"}
+
+         ;; Logging, for one job: a ceremony that fails says nothing to
+         ;; the browser on purpose -- the refusal is uniform so it cannot
+         ;; be used to probe -- and that left the operator with nothing
+         ;; either. Yubico's exception names exactly what mismatched, and
+         ;; a misconfigured origin is undiagnosable without it. Every
+         ;; consumer already has mulog through Grain, and libs/push
+         ;; already uses it.
+         com.brunobonacci/mulog {:mvn/version "0.9.0"}}
 
  ;; No Grain dependency. Auth is infrastructure, not a service area:
  ;; there are no commands, no events and no read models here, so nothing
