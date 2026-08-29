@@ -1,6 +1,7 @@
 (ns nickdex.grain.auth.store
-  "The two tables auth.allium's Credential and Session entities live in,
-   and the migration that creates them.
+  "The tables auth.allium's Credential and Session entities live in, the
+   enrolment code that puts the first Credential on an account, and the
+   migration that creates them.
 
    These are meant to share a consuming application's existing SQLite
    file rather than open one of their own. Grain's event store sets
@@ -60,7 +61,25 @@
       ON auth_session (account_id)"
    ;; Sweeping expired sessions is a range scan over this.
    "CREATE INDEX IF NOT EXISTS auth_session_expires
-      ON auth_session (expires_at)"])
+      ON auth_session (expires_at)"
+
+   ;; The six-digit code that lets a brand-new account register its first
+   ;; passkey. account_id is the primary key, so issuing a second code
+   ;; REPLACES the first: one live code per account, and nothing left to
+   ;; sweep when one goes unused.
+   ;;
+   ;; expires_at is stored rather than derived from a lifetime at read
+   ;; time. A code already in somebody's hands must not have its life
+   ;; extended -- or cut short -- by a later config change.
+   ;;
+   ;; Only the hash is kept. See enrolment.clj for what that is, and is
+   ;; not, worth against six digits.
+   "CREATE TABLE IF NOT EXISTS auth_enrolment_code (
+      account_id      TEXT    PRIMARY KEY,
+      code_hash       TEXT    NOT NULL,
+      expires_at      INTEGER NOT NULL,
+      failed_attempts INTEGER NOT NULL
+    )"])
 
 (defn migrate!
   "Create the auth tables if they are absent. Idempotent, so a consuming

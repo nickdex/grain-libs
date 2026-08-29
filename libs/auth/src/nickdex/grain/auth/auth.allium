@@ -12,15 +12,23 @@
 -- smriti for the first consumer.
 --
 -- Includes: registering a credential, signing in with one, signing out,
---           renaming and removing credentials, session expiry
+--           renaming and removing credentials, session expiry,
+--           the enrolment code that puts the FIRST credential on an
+--           account, and the operator reset that allows another
 -- Excludes:
 --   - The account itself: name, email, profile, and whether an account
 --     may be created at all. The consumer owns registration, which is
 --     what lets an application close signup without this spec knowing
---   - Every non-passkey method: password, email code, magic link, OAuth
---   - Account recovery. A credential is the only way in, so an account
---     that loses all of them is reachable only by the consumer
---     registering another out of band
+--   - Every non-passkey way of SIGNING IN: password, emailed sign-in
+--     code, magic link, OAuth. The enrolment code below is not one of
+--     these -- it buys the right to register a first passkey and never
+--     opens a session by itself
+--   - How an enrolment code reaches the person. Read down a phone, put
+--     in a message, printed: the medium is the consumer's, and the code
+--     is designed to survive all of them
+--   - Self-service recovery. Losing every credential is an operator
+--     matter here (ResetCredentials), not something the person holding
+--     the account can do alone
 --   - The WebAuthn wire ceremony: challenge issue, attestation and
 --     assertion verification, relying-party id and origin. Transport,
 --     and the reason a vetted library does it rather than this spec
@@ -104,6 +112,22 @@ entity Session {
     }
 }
 
+-- The grant that lets a brand-new account register its first passkey.
+--
+-- Registering a credential needs an authenticated caller and a new
+-- account has nothing to authenticate with, so something has to bridge
+-- that gap exactly once. A short code does it without a signing key and
+-- without putting a bearer credential in a URL.
+entity EnrolmentCode {
+    account: Account
+
+    -- Only ever the hash. See CodeIsNeverStoredInTheClear.
+    code_hash: String
+
+    expires_at: Timestamp
+    failed_attempts: Integer
+}
+
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
@@ -113,6 +137,16 @@ config {
     -- measured from the sign-in: a session that is used every day still
     -- ends on schedule.
     session_lifetime: Duration = 30.days
+
+    -- How long an enrolment code is good for. Long enough to send it
+    -- through a message and let somebody get to it; short enough that
+    -- an intercepted message is stale before it is useful.
+    enrolment_lifetime: Duration = 1.hour
+
+    -- Wrong guesses before a code is dead. This, not the length of the
+    -- code, is what makes a short one safe: six digits is a million
+    -- values, and five tries is a 1-in-200,000 chance.
+    enrolment_max_attempts: Integer = 5
 }
 
 ------------------------------------------------------------
@@ -234,16 +268,117 @@ rule RemoveCredential {
         -- question is not which sessions it started but whether anyone
         -- else is still signed in.
         --
-        -- The last credential cannot be removed. There is no recovery
-        -- here -- no password, no email fallback -- so an account with
-        -- no credentials is an account nobody can reach. A consumer
-        -- that has its own recovery path can register a replacement
-        -- first and then remove this one.
+        -- The last credential cannot be removed. No password and no
+        -- emailed sign-in means an account with no credentials is one
+        -- nobody can reach, and a person can always register a
+        -- replacement first and then remove this one.
+        --
+        -- Losing every key anyway is ResetCredentials, which is an
+        -- operator's to run. Keeping that off this rule is deliberate:
+        -- the refusal here should stay something a person can act on,
+        -- not a door with a hidden handle.
+}
+
+rule IssueEnrolmentCode {
+    when: IssueEnrolmentCode(account, code)
+
+    requires: (Credentials where account = account).count = 0
+
+    ensures:
+        not exists EnrolmentCode{account: account}
+        EnrolmentCode.created(
+            account: account,
+            code_hash: hash(code),
+            expires_at: now + config.enrolment_lifetime,
+            failed_attempts: 0,
+        )
+
+    @guidance
+        -- Issuing replaces rather than adds, so an account has at most
+        -- one live code and there is nothing to sweep when one goes
+        -- unused. It also means reissuing is the answer to "I lost it",
+        -- which matters because the plaintext is not recoverable.
+        --
+        -- Refused for an account that already has a key, so the
+        -- operator hears about it at the moment of issue rather than
+        -- the person hearing about it at the moment of use.
+}
+
+rule VerifyEnrolmentCode {
+    when: VerifyEnrolmentCode(account, code)
+
+    requires: c: exists EnrolmentCode{account: account}
+    requires: c.failed_attempts < config.enrolment_max_attempts
+    requires: c.expires_at > now
+    requires: c.code_hash = hash(code)
+    requires: (Credentials where account = account).count = 0
+
+    ensures: not exists c
+
+    @guidance
+        -- The credential count is asked here as well as at issue. A code
+        -- minted when an account had no key must not still work after
+        -- one exists, or the window between the two is a window in which
+        -- somebody else enrols.
+        --
+        -- Success consumes the code. What the caller is left holding is
+        -- permission to register one passkey, and it has to be spent
+        -- before the code could be answered a second time.
+}
+
+rule EnrolmentCodeGuessed {
+    when: VerifyEnrolmentCode(account, code)
+
+    requires: c: exists EnrolmentCode{account: account}
+    requires: c.failed_attempts < config.enrolment_max_attempts
+    requires: c.code_hash != hash(code) or c.expires_at <= now
+
+    ensures: c.failed_attempts = c.failed_attempts + 1
+
+    @guidance
+        -- The counting is the defence. Six digits without it is a
+        -- million tries against a fixed target, which is minutes of
+        -- work; with it, a code is dead after five.
+}
+
+rule ResetCredentials {
+    when: ResetCredentials(account)
+
+    ensures:
+        for c in Credentials where account = account:
+            not exists c
+        for s in Sessions where account = account and status = active:
+            s.status = signed_out
+        not exists EnrolmentCode{account: account}
+
+    @guidance
+        -- The way back from losing every device, and the reason
+        -- RemoveCredential can go on refusing to take a last key.
+        --
+        -- Deliberately not on any surface. It turns an account somebody
+        -- holds into an account whoever receives the next code holds,
+        -- which is the one operation here that should cost a human
+        -- decision rather than a request.
 }
 
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
+
+invariant CodeIsNeverStoredInTheClear {
+    for c in EnrolmentCodes:
+        c.code_hash != plaintext(c)
+}
+
+invariant AtMostOneLiveCodePerAccount {
+    for c in EnrolmentCodes:
+        (EnrolmentCodes where account = c.account).count = 1
+}
+
+invariant EnrolmentCodeOnlyOnAnUnenrolledAccount {
+    for c in EnrolmentCodes:
+        (Credentials where account = c.account).count = 0
+}
 
 invariant CredentialIdIsUnique {
     for c in Credentials:
@@ -266,6 +401,14 @@ invariant ActiveSessionHasNotOutlivedItsGrant {
 
 actor CredentialHolder {
     identified_by: Session where status = active
+}
+
+-- Whoever runs the system, reaching it out of band -- a REPL, a console
+-- -- rather than through it. Deliberately NOT identified by a session:
+-- an operator marker that a request could carry would be an operator
+-- marker a request could forge.
+actor Operator {
+    identified_by: out_of_band
 }
 
 ------------------------------------------------------------
@@ -293,6 +436,65 @@ surface SignIn {
         -- one yet. A discoverable credential identifies its own account:
         -- the person presents an assertion and the account follows from
         -- it, rather than naming themselves first and proving it after.
+}
+
+surface Enrolment {
+    provides:
+        VerifyEnrolmentCode(account, code)
+        RegisterCredential(account, credential_id, public_key, sign_count, label)
+
+    contracts:
+        demands Authenticator
+
+    @guarantee RejectionRevealsNothing
+        -- One refusal for every failure: no such account, no code
+        -- issued, the wrong code, an expired one, one guessed at too
+        -- often, and an account already enrolled. Telling them apart
+        -- says whether an account exists and whether it is already in
+        -- use, to somebody holding nothing but a guess.
+
+    @guarantee CodeIsSpentOnFirstSuccess
+        -- Verification consumes the code. The permission it leaves
+        -- behind covers registering one passkey, and both are gone
+        -- afterwards -- so a code overheard once cannot be used twice,
+        -- and cannot be used at all after the account has a key.
+
+    @guidance
+        -- No party is named, because at this boundary there is not one
+        -- yet: the whole point is that the account has no credential to
+        -- authenticate with. The account is named by its handle and the
+        -- code is what makes the naming trustworthy.
+        --
+        -- Registering follows verification directly here rather than in
+        -- CredentialManagement, because the person has no session. On
+        -- success they should be signed in -- otherwise enrolment ends
+        -- by asking somebody to prove possession of the key they made a
+        -- second ago.
+}
+
+surface Operations {
+    facing operator: Operator
+
+    provides:
+        IssueEnrolmentCode(account, code)
+        ResetCredentials(account)
+
+    @guarantee NotReachableOverHTTP
+        -- Neither of these is mounted on a route, and neither is a
+        -- command an application's request handler can dispatch. The
+        -- guard is structural rather than a predicate somebody has to
+        -- remember: there is no request that reaches them.
+
+    @guidance
+        -- Both are operator work by nature. Issuing a code is how a
+        -- person is let in at all, and resetting credentials is the one
+        -- operation that takes an account away from whoever currently
+        -- holds it -- so both should cost a human decision.
+        --
+        -- An application with open signup would move IssueEnrolmentCode
+        -- to a public surface and pair it with something that proves
+        -- control of the handle. That is a different spec, and this one
+        -- does not stop it.
 }
 
 surface SessionManagement {
@@ -363,6 +565,8 @@ surface CredentialManagement {
 ------------------------------------------------------------
 
 open question "Is session_lifetime absolute or idle? Modelled as absolute -- expires_at is set once at sign-in and never moved, so a session in daily use still ends after 30 days. last_seen_at is recorded but nothing reads it. Idle expiry would extend expires_at on each request, which is friendlier and keeps a stolen session alive as long as it is being used."
+
+open question "Should an enrolment code be reissuable while one is still live? Modelled as yes -- IssueEnrolmentCode replaces, and resets failed_attempts with it. That makes reissuing the answer to both 'I lost it' and 'I burnt the attempts', and it also means anyone who can ask for a code can clear an attacker's attempt count. The operator is the only caller today, so this is not reachable by a guesser."
 
 open question "Should a failed sign-in be recorded? Nothing here observes one, so a credential can be probed without limit. Rate limiting is the usual answer and needs a fact to count."
 

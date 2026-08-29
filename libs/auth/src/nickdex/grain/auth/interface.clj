@@ -30,6 +30,7 @@
    them without being told about them."
   (:require [nickdex.grain.auth.ceremony :as ceremony]
             [nickdex.grain.auth.credentials :as credentials]
+            [nickdex.grain.auth.enrolment :as enrolment]
             [nickdex.grain.auth.script :as script]
             [nickdex.grain.auth.sessions :as sessions]
             [nickdex.grain.auth.store :as store]))
@@ -173,3 +174,57 @@
 (def default-session-lifetime
   "auth.allium's config.session_lifetime, absolute from the sign-in."
   sessions/default-lifetime)
+
+;; --- Enrolment ----------------------------------------------------
+;;
+;; Registering a credential needs an authenticated caller, and a new
+;; account has nothing to authenticate with. A six-digit code bridges
+;; that, the way Biff's sign-in codes do: only a hash is stored, it
+;; expires, and five wrong guesses burn it.
+;;
+;; It buys ONE thing -- the right to put a first passkey on an account
+;; that has none -- and it is spent the moment that happens. It is not a
+;; sign-in, and it cannot add a key to an account already in use.
+
+(def issue-enrolment-code!
+  "Mint a code for one account and return {:code :expires-at} once, in
+   the clear. Only the hash is stored, so a lost code is reissued rather
+   than recovered -- and reissuing replaces whatever came before.
+
+   Refused for an account that already has a passkey."
+  enrolment/issue!)
+
+(def verify-enrolment-code!
+  "The account a handle and code enrol, or nil for every kind of
+   failure. A wrong code costs an attempt; a right one is consumed."
+  enrolment/verify!)
+
+(def clear-enrolment-code!
+  "Revoke an outstanding code. Idempotent."
+  enrolment/clear!)
+
+(def enrolment-pending?
+  "Whether an account has a code that could still be used. For an
+   operator listing -- `verify-enrolment-code!` is the only thing that
+   should judge a code on the request path."
+  enrolment/pending?)
+
+(def enrolment-lifetime
+  "How long a freshly issued code lives."
+  enrolment/default-lifetime)
+
+(def enrolment-max-attempts
+  "Wrong guesses before a code is dead. This, not the six digits, is what
+   makes the code strong enough."
+  enrolment/max-attempts)
+
+(def reset-credentials!
+  "Remove every passkey and session on an account so a fresh enrolment
+   code can take it again -- the way back from losing every device.
+
+   Deliberately not reachable over HTTP, and deliberately not something a
+   code can trigger: it turns an account somebody holds into an account
+   whoever gets the next code holds. `remove-credential!` refuses to take
+   a last key for that reason, which is why recovery cannot be assembled
+   from the ordinary operations."
+  enrolment/reset-credentials!)
