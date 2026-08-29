@@ -181,3 +181,67 @@
                                                         now)))
                          ["{\"not\":\"a credential\"}" "null" "{}"])]
       (is (= 1 (count messages)) (str "distinguishable failures: " messages)))))
+
+;; ------------------------------------------------------------------
+;; Origins
+;; ------------------------------------------------------------------
+
+(defn- yubico-allows?
+  "Yubico's own matcher, asked directly. Reflection because it is
+   package-private -- worth it, because the whole point of these tests is
+   that our idea of 'the same origin' matches the library's, and
+   restating its rules here would only prove we can restate them."
+  [browser-origin configured]
+  (let [m (doto (.getDeclaredMethod (Class/forName "com.yubico.webauthn.OriginMatcher")
+                                    "isAllowed"
+                                    (into-array Class [String java.util.Set
+                                                       Boolean/TYPE Boolean/TYPE]))
+            (.setAccessible true))]
+    (.invoke m nil (object-array [browser-origin #{configured} false false]))))
+
+(deftest a-configured-base-url-is-reduced-to-a-browser-origin
+  ;; A base URL is a URL, and URLs collect trailing slashes and paths
+  ;; without anyone deciding to add one. A clientData origin never has
+  ;; either, and Yubico compares them as strings -- so the difference is
+  ;; total, and it surfaces at the FINISH step, after the person has
+  ;; already touched their authenticator, with a message naming nothing.
+  (testing "a trailing slash is dropped"
+    (is (= "https://example.com:8080"
+           (webauthn/normalise-origin "https://example.com:8080/"))))
+
+  (testing "a path is dropped"
+    (is (= "https://example.com" (webauthn/normalise-origin "https://example.com/app"))))
+
+  (testing "a default port is not restated -- the browser does not send one"
+    (is (= "https://example.com" (webauthn/normalise-origin "https://example.com")))
+    (is (= "https://example.com" (webauthn/normalise-origin "https://example.com/"))))
+
+  (testing "a non-default port is kept, because the browser sends it"
+    (is (= "http://localhost:8080" (webauthn/normalise-origin "http://localhost:8080/"))))
+
+  (testing "an already-clean origin is left alone"
+    (is (= "https://example.com" (webauthn/normalise-origin "https://example.com")))))
+
+(deftest normalising-is-what-yubico-actually-accepts
+  ;; The check that matters: not that our string looks tidy, but that the
+  ;; matcher says yes to it and no to the raw one.
+  (doseq [[configured browser]
+          [["https://example.com:8080/" "https://example.com:8080"]
+           ["http://localhost:8080/"    "http://localhost:8080"]
+           ["https://example.com/"      "https://example.com"]]]
+    (is (false? (yubico-allows? browser configured))
+        (str "expected the raw base URL " configured " to be rejected -- if this "
+             "passes, normalising is no longer buying anything"))
+    (is (true? (yubico-allows? browser (webauthn/normalise-origin configured)))
+        (str configured " still does not match " browser " after normalising"))))
+
+(deftest the-relying-party-uses-the-normalised-origin
+  ;; The wiring, not just the helper. Normalising a string that nothing
+  ;; passes to the RelyingParty buys nothing, and that regression is
+  ;; invisible until a ceremony fails at the finish step -- so it is
+  ;; asserted against the object Yubico will actually match with.
+  (let [rp (webauthn/relying-party {:origin "https://example.com:8080/"
+                                    :app-name "Example"
+                                    :datasource nil})]
+    (is (= #{"https://example.com:8080"} (set (.getOrigins rp))))
+    (is (= "example.com" (.getId (.getIdentity rp))))))

@@ -76,6 +76,37 @@ async function post(path, body) {
 // which step failed; saying more here would give it back.
 function fail(el, message) { if (el) el.textContent = message; }
 
+// What went wrong at the authenticator, in words whoever can act on it
+// would use.
+//
+// A dismissed prompt and a misconfigured relying party both arrive here
+// as an exception, and calling both 'cancelled' is what makes a
+// deployment mistake look like somebody changing their mind. The browser
+// already tells them apart by name:
+//
+//   SecurityError    the page's origin is not the RP id the server sent.
+//                    Nothing the person can do; whoever set the base URL
+//                    can.
+//   NotAllowedError  dismissed, or timed out. Theirs, and 'try again' is
+//                    the whole of the advice.
+//
+// Naming the RP id gives nothing away -- the server sent it to this page
+// a moment ago, and the origin it is being compared against is in the
+// URL bar. It turns the one failure nobody can guess at into a one-line
+// fix.
+function ceremonyError(e, options, verb) {
+  if (e && e.name === 'SecurityError') {
+    const rp = options && options.rp && options.rp.id;
+    return 'This site is ' + window.location.origin + ', but passkeys here are set up for '
+      + (rp ? rp : 'another site')
+      + '. Those have to match -- check the base URL the server is configured with.';
+  }
+  if (!window.isSecureContext) {
+    return 'Passkeys need a secure connection. Open this over https, or on localhost.';
+  }
+  return verb + ' was cancelled or did not complete.';
+}
+
 async function register(label, statusEl, next) {
   fail(statusEl, '');
   const optsRes = await fetch(" (q register-options) ");
@@ -85,10 +116,7 @@ async function register(label, statusEl, next) {
   try {
     credential = await navigator.credentials.create({ publicKey: options });
   } catch (e) {
-    // A cancelled prompt lands here alongside a real failure. Neither is
-    // worth alarming language: the person either changed their mind or
-    // their device declined, and both mean 'try again'.
-    fail(statusEl, 'Registration was cancelled or did not complete.');
+    fail(statusEl, ceremonyError(e, options, 'Registration'));
     return;
   }
   const result = await post(" (q register-finish) ",
@@ -111,7 +139,7 @@ async function signIn(handle, statusEl, next) {
   try {
     credential = await navigator.credentials.get({ publicKey: options });
   } catch (e) {
-    fail(statusEl, 'Sign-in was cancelled or did not complete.');
+    fail(statusEl, ceremonyError(e, options, 'Sign-in'));
     return;
   }
   await finish(credential, statusEl, next);

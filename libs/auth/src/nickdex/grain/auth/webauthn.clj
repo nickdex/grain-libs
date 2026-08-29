@@ -112,7 +112,34 @@
         #{(->registered-credential row)}
         #{}))))
 
-(defn- relying-party [{:keys [origin app-name] :as config}]
+(defn normalise-origin
+  "An origin in the exact shape a browser reports one: scheme://host,
+   plus the port when it is not the default.
+
+   A configured base URL is a URL, and URLs pick up trailing slashes and
+   paths without anyone thinking about it. A browser's clientData origin
+   never has either, and Yubico compares the two as STRINGS unless
+   subdomain or port matching is switched on -- so a configured
+   \"https://example.com:8080/\" matches the browser's
+   \"https://example.com:8080\" not at all. Registration then fails at the
+   finish step, after the person has already touched their authenticator,
+   with a message that names nothing.
+
+   Verified against com.yubico.webauthn.OriginMatcher/isAllowed: with the
+   trailing slash it answers false, without it true."
+  ^String [origin]
+  (let [u (URI. (str origin))
+        port (.getPort u)]
+    (str (.getScheme u) "://" (.getHost u)
+         (when (pos? port) (str ":" port)))))
+
+(defn relying-party
+  "The Yubico RelyingParty every ceremony call runs through.
+
+   Not private, so a test can ask what origins it actually ended up
+   holding. Everything public is in interface.clj; this namespace is
+   internal either way."
+  [{:keys [origin app-name] :as config}]
   (-> (RelyingParty/builder)
       (.identity (-> (RelyingPartyIdentity/builder)
                      ;; The RP id is the host alone. A scheme or port here
@@ -122,7 +149,7 @@
                      (.name (or app-name "app"))
                      .build))
       (.credentialRepository (credential-repository config))
-      (.origins #{origin})
+      (.origins #{(normalise-origin origin)})
       .build))
 
 ;; ------------------------------------------------------------------
