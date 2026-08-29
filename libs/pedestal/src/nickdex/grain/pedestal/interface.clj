@@ -146,6 +146,11 @@
    endpoint rather than the endpoint, which is a capability."
   push/for-account)
 
+(def unsubscribe-device!
+  "Retire one push subscription, scoped to its account. The operator's
+   counterpart to the route a person reaches from their account page."
+  push/unsubscribe!)
+
 (def notify!
   "Deliver one message to every device on an account. Returns outcomes
    by count, e.g. {:delivered 2} or {:delivered 1 :gone 1}.
