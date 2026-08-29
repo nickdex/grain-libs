@@ -146,6 +146,20 @@
    endpoint rather than the endpoint, which is a capability."
   push/for-account)
 
+(def notify!
+  "Deliver one message to every device on an account. Returns outcomes
+   by count, e.g. {:delivered 2} or {:delivered 1 :gone 1}.
+
+   Takes grain-push's own config -- {:datasource :vapid-public-key
+   :vapid-private-key :vapid-subject} -- rather than this library's,
+   because the private key should be unwrapped at the point of use and
+   not live on a config map that gets passed around and logged.
+
+   Subscriptions the push service reports as gone are retired as a side
+   effect. That is what keeps the list from filling with browsers that
+   were uninstalled."
+  push/send!)
+
 ;; --- Predicates ---------------------------------------------------
 
 (def signed-in?
