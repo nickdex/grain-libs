@@ -70,7 +70,7 @@
     :else :failed))
 
 (defn send!
-  "Deliver one message to every device on an account. Returns a map of
+  "Deliver one message to every device on a user. Returns a map of
    outcome to count.
 
    Retires the devices the service reports as gone, which is the only
@@ -78,10 +78,10 @@
    uninstalled or had their site data cleared.
 
    `message` is a map; it reaches the service worker as JSON."
-  [{:keys [datasource] :as config} account-id message]
+  [{:keys [datasource] :as config} user-id message]
   (let [service (push-service config)
         payload (json/generate-string message)]
-    (->> (devices/for-account datasource account-id)
+    (->> (devices/for-user datasource user-id)
          (map (fn [{:keys [endpoint public-key auth-secret label]}]
                 (let [result
                       (try

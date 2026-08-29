@@ -1,9 +1,9 @@
 (ns nickdex.grain.auth.enrolment
-  "The first passkey on a new account: a six-digit code, issued by an
+  "The first passkey on a new user: a six-digit code, issued by an
    operator and handed over out of band.
 
    Registering a credential needs an authenticated caller, and a new
-   account has nothing to authenticate with. Something has to bridge that
+   user has nothing to authenticate with. Something has to bridge that
    gap. This library used to bridge it with a signed link, which had two
    problems: it was a bearer credential sitting in a URL -- and URLs are
    forwarded, screenshotted and kept in history -- and it needed a
@@ -11,7 +11,7 @@
    wrongly without noticing.
 
    A code has neither problem. It can be read aloud over a phone call, it
-   carries no account id for anyone to lift out of it, and it needs no
+   carries no user id for anyone to lift out of it, and it needs no
    key at all: what makes it safe is that only a hash is stored, it dies
    after an hour, and five wrong guesses burn it. Six digits with five
    attempts is a 1-in-200,000 chance -- the attempt cap, not the length,
@@ -31,10 +31,10 @@
    somebody glances at -- and against a live code being usable straight
    from a row. The expiry and the attempt cap are the real defences.
 
-   FIRST KEY ONLY. A code is checked against an account with no
+   FIRST KEY ONLY. A code is checked against a user with no
    credentials, both when issued and when verified. That means it is
    spent the moment enrolment succeeds, with nothing to mark or clean up,
-   and it means an intercepted code cannot add a key to an account that
+   and it means an intercepted code cannot add a key to a user that
    is already in use. Losing every passkey is therefore an operator
    matter: `reset-credentials!`, then a fresh code."
   (:require [cognitect.anomalies :as anom]
@@ -85,50 +85,70 @@
                               (.getBytes stored-hash "UTF-8"))))
 
 (defn- enrolled?
-  "Whether this account already has a way in. The whole of the first-key
+  "Whether this user already has a way in. The whole of the first-key
    rule, asked in the two places it matters."
-  [datasource account-id]
-  (pos? (credentials/count-for-account datasource account-id)))
+  [datasource user-id]
+  (pos? (credentials/count-for-user datasource user-id)))
 
 ;; ------------------------------------------------------------------
 ;; Issuing
 ;; ------------------------------------------------------------------
 
 (defn issue!
-  "Mint a code for one account and return it ONCE, in the clear.
+  "Mint a code for one user and return {:code :expires-at} ONCE, in the
+   clear.
+
+   Takes the same config `verify!` does, because both of its refusals
+   need it.
 
    The plaintext is never stored and cannot be recovered afterwards, so a
    caller that loses it issues another -- which replaces the first rather
    than adding to it.
 
-   Refused for an account that already has a passkey. Checking here as
-   well as at verification means the operator hears about it immediately,
-   instead of the person on the other end of the phone hearing about it."
-  ([datasource account-id ^Instant now]
-   (issue! datasource account-id now default-lifetime))
-  ([datasource account-id ^Instant now ^Duration lifetime]
-   (if (enrolled? datasource account-id)
+   Two refusals, both stated here rather than left for the person at the
+   other end of the phone to discover:
+
+   - The user already has a passkey. First key only; see the ns
+     docstring.
+   - The user has no handle. `verify!` names a user by its handle, so a
+     user the :users seam cannot produce one for -- a contact-book human
+     with a phone number and no email -- can never complete enrolment. A
+     code for them is dead on arrival, and saying so at issue is the
+     difference between a rule and a mystery."
+  ([config user-id ^Instant now]
+   (issue! config user-id now default-lifetime))
+  ([{:keys [datasource users] :as _config} user-id ^Instant now ^Duration lifetime]
+   (cond
+     (enrolled? datasource user-id)
      {::anom/category ::anom/conflict
-      ::anom/message "That account already has a passkey."}
+      ::anom/message "That user already has a passkey."}
+
+     (nil? (some-> (:handle-for-user users) (apply [user-id])))
+     {::anom/category ::anom/incorrect
+      ::anom/message (str "That user has no email to enrol with. A code names "
+                          "the user by their handle, so there is nothing to "
+                          "enter it against.")}
+
+     :else
      (let [code (new-code)
            expires-at (.plus now lifetime)]
        (jdbc/execute-one!
         datasource
         ["INSERT INTO auth_enrolment_code
-            (account_id, code_hash, expires_at, failed_attempts)
+            (user_id, code_hash, expires_at, failed_attempts)
           VALUES (?, ?, ?, 0)
-          ON CONFLICT(account_id) DO UPDATE SET
+          ON CONFLICT(user_id) DO UPDATE SET
             code_hash = excluded.code_hash,
             expires_at = excluded.expires_at,
             failed_attempts = 0"
-         (str account-id) (hash-code code) (store/->millis expires-at)])
+         (str user-id) (hash-code code) (store/->millis expires-at)])
        {:code code :expires-at expires-at}))))
 
 (defn clear!
-  "Revoke whatever code this account has, if any. Idempotent."
-  [datasource account-id]
+  "Revoke whatever code this user has, if any. Idempotent."
+  [datasource user-id]
   (sql/delete! datasource :auth_enrolment_code
-               {:account_id (str account-id)} store/options)
+               {:user_id (str user-id)} store/options)
   nil)
 
 ;; ------------------------------------------------------------------
@@ -136,53 +156,53 @@
 ;; ------------------------------------------------------------------
 
 (defn verify!
-  "The account this code enrols, or nil.
+  "The user this code enrols, or nil.
 
-   `handle` is whatever the application's :accounts seam looks accounts
-   up by -- an email, in both apps using this. It names the account; the
+   `handle` is whatever the application's :users seam looks users
+   up by -- an email, in both apps using this. It names the user; the
    code proves the person was told about it.
 
    nil covers every failure: no such handle, no code issued, the wrong
    code, an expired one, one that has been guessed at too many times, and
-   an account that has since been enrolled. Telling them apart would say
-   whether an account exists and whether it is already in use, to
+   a user that has since been enrolled. Telling them apart would say
+   whether a user exists and whether it is already in use, to
    somebody holding nothing but a guess.
 
    A wrong code costs an attempt. A right one deletes the row, so it
    cannot be answered twice -- the caller gets one grant out of this and
    has to come back for another."
-  [{:keys [datasource accounts]} handle ^String code ^Instant now]
-  (let [account-id (when-let [f (:account-id-for-handle accounts)]
+  [{:keys [datasource users]} handle ^String code ^Instant now]
+  (let [user-id (when-let [f (:user-id-for-handle users)]
                      (f handle))]
-    (when account-id
+    (when user-id
       (jdbc/with-transaction [tx datasource]
-        (let [row (sql/get-by-id tx :auth_enrolment_code (str account-id)
-                                 :account_id store/options)]
+        (let [row (sql/get-by-id tx :auth_enrolment_code (str user-id)
+                                 :user_id store/options)]
           (when (and row (< (:failed-attempts row) max-attempts))
             (if (and (< (.toEpochMilli now) (long (:expires-at row)))
                      (matches? code (:code-hash row))
                      ;; Re-asked at the moment of use. A code issued
                      ;; before a key existed must not still work after
                      ;; one does.
-                     (not (enrolled? tx account-id)))
+                     (not (enrolled? tx user-id)))
               (do (sql/delete! tx :auth_enrolment_code
-                               {:account_id (str account-id)} store/options)
-                  account-id)
+                               {:user_id (str user-id)} store/options)
+                  user-id)
               (do (jdbc/execute-one!
                    tx
                    ["UPDATE auth_enrolment_code
                        SET failed_attempts = failed_attempts + 1
-                     WHERE account_id = ?" (str account-id)])
+                     WHERE user_id = ?" (str user-id)])
                   nil))))))))
 
 (defn pending?
-  "Whether this account has a code outstanding that could still be used.
+  "Whether this user has a code outstanding that could still be used.
    For an operator listing, not for any decision on the request path --
    `verify!` is the only thing that should be judging a code."
-  [datasource account-id ^Instant now]
+  [datasource user-id ^Instant now]
   (boolean
-   (when-let [row (sql/get-by-id datasource :auth_enrolment_code (str account-id)
-                                 :account_id store/options)]
+   (when-let [row (sql/get-by-id datasource :auth_enrolment_code (str user-id)
+                                 :user_id store/options)]
      (and (< (:failed-attempts row) max-attempts)
           (< (.toEpochMilli now) (long (:expires-at row)))))))
 
@@ -191,12 +211,12 @@
 ;; ------------------------------------------------------------------
 
 (defn reset-credentials!
-  "Remove every passkey and session on an account, so a fresh code can
+  "Remove every passkey and session on a user, so a fresh code can
    enrol it again.
 
    The way back from losing every device. Deliberately NOT reachable over
    HTTP and deliberately not something a code can trigger: it is the one
-   operation that turns an account somebody holds into an account anybody
+   operation that turns a user somebody holds into a user anybody
    with the next code holds, so it wants a human decision behind it.
 
    `credentials/remove!` refuses to remove a last key for exactly that
@@ -204,10 +224,10 @@
    operations and lives here instead.
 
    Returns how many keys were removed."
-  [datasource account-id]
+  [datasource user-id]
   (jdbc/with-transaction [tx datasource]
-    (let [n (credentials/count-for-account tx account-id)]
-      (sql/delete! tx :auth_credential {:account_id (str account-id)} store/options)
-      (sql/delete! tx :auth_session {:account_id (str account-id)} store/options)
-      (sql/delete! tx :auth_enrolment_code {:account_id (str account-id)} store/options)
+    (let [n (credentials/count-for-user tx user-id)]
+      (sql/delete! tx :auth_credential {:user_id (str user-id)} store/options)
+      (sql/delete! tx :auth_session {:user_id (str user-id)} store/options)
+      (sql/delete! tx :auth_enrolment_code {:user_id (str user-id)} store/options)
       n)))

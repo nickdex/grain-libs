@@ -7,7 +7,7 @@
    worth replaying, the workload is point lookups by credential id, and a
    person who asks to be erased has to actually disappear -- which an
    append-only log cannot do. The consuming application's own domain
-   stays event-sourced; see identity.allium in smriti for the account
+   stays event-sourced; see identity.allium in smriti for the user
    these credentials point at.
 
    One consequence is worth naming, because it is a security property and
@@ -50,9 +50,9 @@
 ;;   {:origin     "https://example.com"    ; scheme + host (+ port)
 ;;    :app-name   "Example"                ; shown by the authenticator
 ;;    :datasource ds
-;;    :accounts   {:account-id-for-handle    (fn [handle] ...)
-;;                 :handle-for-account       (fn [account-id] ...)
-;;                 :display-name-for-account (fn [account-id] ...)}}
+;;    :users   {:user-id-for-handle    (fn [handle] ...)
+;;                 :handle-for-user       (fn [user-id] ...)
+;;                 :display-name-for-user (fn [user-id] ...)}}
 ;;
 ;; Every `begin-` returns a `:pending` string its `complete-` needs back.
 ;; Where it lives in between is yours -- a signed session cookie is the
@@ -60,9 +60,9 @@
 ;; not the ceremony succeeded, or a captured assertion can be replayed.
 
 (def begin-registration
-  "Start registering a key for an account that already exists. Returns
+  "Start registering a key for a user that already exists. Returns
    {:options-json :pending}. Reaching this IS the authorization decision:
-   whoever may call it may add a key to that account."
+   whoever may call it may add a key to that user."
   ceremony/begin-registration)
 
 (def complete-registration!
@@ -77,7 +77,7 @@
   ceremony/complete-registration-and-sign-in!)
 
 (def begin-sign-in
-  "Start signing in as a named handle. Reveals whether an account exists
+  "Start signing in as a named handle. Reveals whether a user exists
    and cannot avoid it -- the browser needs the credential ids to offer.
    Prefer begin-discoverable-sign-in."
   ceremony/begin-sign-in)
@@ -106,32 +106,32 @@
 ;; --- Credentials --------------------------------------------------
 
 (def register-credential!
-  "Register a passkey against an account that already exists. Returns the
+  "Register a passkey against a user that already exists. Returns the
    credential, or an anomaly when the label is blank or the credential id
-   is already known to some account."
+   is already known to some user."
   credentials/register!)
 
 (def credential-by-id
   "One credential by the id an authenticator sent. The lookup every
-   assertion makes, before any account is known."
+   assertion makes, before any user is known."
   credentials/by-credential-id)
 
 (def credential-by-uuid
   "One credential by its surrogate uuid -- the form safe to put in a URL."
   credentials/by-uuid)
 
-(def credentials-for-account
-  "Every credential this account can sign in with, oldest first."
-  credentials/for-account)
+(def credentials-for-user
+  "Every credential this user can sign in with, oldest first."
+  credentials/for-user)
 
 (def rename-credential!
   "Replace a passkey's label. Returns an anomaly when the label is blank."
   credentials/rename!)
 
 (def remove-credential!
-  "Remove a passkey and end every session on the account. Returns an
+  "Remove a passkey and end every session on the user. Returns an
    anomaly on the last remaining key: there is no recovery here, so an
-   account with no credentials is one nobody can reach."
+   user with no credentials is one nobody can reach."
   credentials/remove!)
 
 ;; --- Sessions -----------------------------------------------------
@@ -153,18 +153,18 @@
   "The session behind a request, or nil when it has ended or run out."
   sessions/active)
 
-(def sessions-for-account
+(def sessions-for-user
   "Sessions that have not ended or run out, most recent first."
-  sessions/for-account)
+  sessions/for-user)
 
 (def sign-out!
   "End one session, here or on another device. Scoped to the caller's own
-   account, so a session id alone cannot end somebody else's."
+   user, so a session id alone cannot end somebody else's."
   sessions/sign-out!)
 
-(def sign-out-account!
-  "End every session on an account."
-  sessions/sign-out-account!)
+(def sign-out-user!
+  "End every session on a user."
+  sessions/sign-out-user!)
 
 (def purge-expired-sessions!
   "Reclaim rows for sessions that have run out. Changes no answer -- every
@@ -178,24 +178,28 @@
 ;; --- Enrolment ----------------------------------------------------
 ;;
 ;; Registering a credential needs an authenticated caller, and a new
-;; account has nothing to authenticate with. A six-digit code bridges
+;; user has nothing to authenticate with. A six-digit code bridges
 ;; that, the way Biff's sign-in codes do: only a hash is stored, it
 ;; expires, and five wrong guesses burn it.
 ;;
-;; It buys ONE thing -- the right to put a first passkey on an account
+;; It buys ONE thing -- the right to put a first passkey on a user
 ;; that has none -- and it is spent the moment that happens. It is not a
-;; sign-in, and it cannot add a key to an account already in use.
+;; sign-in, and it cannot add a key to a user already in use.
 
 (def issue-enrolment-code!
-  "Mint a code for one account and return {:code :expires-at} once, in
-   the clear. Only the hash is stored, so a lost code is reissued rather
-   than recovered -- and reissuing replaces whatever came before.
+  "Mint a code for one user and return {:code :expires-at} once, in the
+   clear. Takes the same config `verify-enrolment-code!` does.
 
-   Refused for an account that already has a passkey."
+   Only the hash is stored, so a lost code is reissued rather than
+   recovered -- and reissuing replaces whatever came before.
+
+   Refused for a user that already has a passkey, and for one the :users
+   seam has no handle for: a code is entered against a handle, so there
+   would be nothing to enter it against."
   enrolment/issue!)
 
 (def verify-enrolment-code!
-  "The account a handle and code enrol, or nil for every kind of
+  "The user a handle and code enrol, or nil for every kind of
    failure. A wrong code costs an attempt; a right one is consumed."
   enrolment/verify!)
 
@@ -204,7 +208,7 @@
   enrolment/clear!)
 
 (def enrolment-pending?
-  "Whether an account has a code that could still be used. For an
+  "Whether a user has a code that could still be used. For an
    operator listing -- `verify-enrolment-code!` is the only thing that
    should judge a code on the request path."
   enrolment/pending?)
@@ -219,11 +223,11 @@
   enrolment/max-attempts)
 
 (def reset-credentials!
-  "Remove every passkey and session on an account so a fresh enrolment
+  "Remove every passkey and session on a user so a fresh enrolment
    code can take it again -- the way back from losing every device.
 
    Deliberately not reachable over HTTP, and deliberately not something a
-   code can trigger: it turns an account somebody holds into an account
+   code can trigger: it turns a user somebody holds into a user
    whoever gets the next code holds. `remove-credential!` refuses to take
    a last key for that reason, which is why recovery cannot be assembled
    from the ordinary operations."

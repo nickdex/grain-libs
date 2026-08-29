@@ -52,13 +52,13 @@
              expires-at (.plus now lifetime)]
          (sql/insert! tx :auth_session
                       {:session_id (str session-id)
-                       :account_id (str (:account-id credential))
+                       :user_id (str (:user-id credential))
                        :started_at (store/->millis now)
                        :last_seen_at (store/->millis now)
                        :expires_at (store/->millis expires-at)}
                       store/options)
          {:session-id session-id
-          :account-id (:account-id credential)
+          :user-id (:user-id credential)
           :started-at now
           :last-seen-at now
           :expires-at expires-at})))))
@@ -67,7 +67,7 @@
   (when row
     (-> row
         (update :session-id parse-uuid)
-        (update :account-id parse-uuid)
+        (update :user-id parse-uuid)
         (update :started-at store/<-millis)
         (update :last-seen-at store/<-millis)
         (update :expires-at store/<-millis))))
@@ -108,13 +108,13 @@
            (credentials/record-use! tx credential-uuid sign-count now)
            (sql/insert! tx :auth_session
                         {:session_id (str session-id)
-                         :account_id (str (:account-id credential))
+                         :user_id (str (:user-id credential))
                          :started_at (store/->millis now)
                          :last_seen_at (store/->millis now)
                          :expires_at (store/->millis expires-at)}
                         store/options)
            {:session-id session-id
-            :account-id (:account-id credential)
+            :user-id (:user-id credential)
             :started-at now
             :last-seen-at now
             :expires-at expires-at}))))))
@@ -141,15 +141,15 @@
                      store/options))
       session)))
 
-(defn for-account
-  "Sessions on this account that have not ended or run out, most recent
+(defn for-user
+  "Sessions on this user that have not ended or run out, most recent
    first. What auth.allium's SessionManagement lists."
-  [datasource account-id ^Instant now]
+  [datasource user-id ^Instant now]
   (->> (sql/query datasource
                   ["SELECT * FROM auth_session
-                     WHERE account_id = ? AND expires_at > ?
+                     WHERE user_id = ? AND expires_at > ?
                      ORDER BY started_at DESC"
-                   (str account-id) (store/->millis now)]
+                   (str user-id) (store/->millis now)]
                   store/options)
        (mapv row->session)))
 
@@ -160,29 +160,29 @@
 (defn sign-out!
   "auth.allium's SignOut. Ends one session, here or on another device --
    nothing distinguishes the two, because a session is ended by whoever
-   holds the account and where the request came from does not change what
+   holds the user and where the request came from does not change what
    happens to it.
 
-   `account-id` is the caller's own, and a session belonging to anyone
+   `user-id` is the caller's own, and a session belonging to anyone
    else is left alone and reported the same way an absent one is. Without
    that condition in the WHERE clause, a session id is enough to end
    somebody else's session."
-  [datasource session-id account-id]
+  [datasource session-id user-id]
   (let [deleted (-> (sql/delete! datasource :auth_session
                                  {:session_id (str session-id)
-                                  :account_id (str account-id)}
+                                  :user_id (str user-id)}
                                  store/options)
                     ::jdbc/update-count)]
     (when (zero? (or deleted 0))
       {::anom/category ::anom/not-found
        ::anom/message "That session has already ended."})))
 
-(defn sign-out-account!
-  "End every session on an account. What removing a passkey does, and
+(defn sign-out-user!
+  "End every session on a user. What removing a passkey does, and
    what a person asking to be signed out everywhere gets."
-  [datasource account-id]
+  [datasource user-id]
   (sql/delete! datasource :auth_session
-               {:account_id (str account-id)}
+               {:user_id (str user-id)}
                store/options)
   nil)
 

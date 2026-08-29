@@ -16,15 +16,15 @@
      {:origin      \"https://example.com\"   ; scheme + host (+ port)
       :app-name    \"Example\"                ; shown by the authenticator
       :datasource  ds
-      :accounts    {:account-id-for-handle    (fn [handle] ...)
-                    :handle-for-account       (fn [account-id] ...)
-                    :display-name-for-account (fn [account-id] ...)}}
+      :users    {:user-id-for-handle    (fn [handle] ...)
+                    :handle-for-user       (fn [user-id] ...)
+                    :display-name-for-user (fn [user-id] ...)}}
 
    `handle` is WebAuthn's `user.name` -- whatever your application calls
    people by when an authenticator asks. An email works; so does a
    username. This library never interprets it.
 
-   :display-name-for-account is optional and falls back to the handle.
+   :display-name-for-user is optional and falls back to the handle.
    The two differ for a reason: an authenticator shows the display name
    to a person choosing between keys, so \"Nikhil Warke\" belongs there
    and an email address belongs in the handle."
@@ -48,9 +48,9 @@
 ;; ------------------------------------------------------------------
 
 (defn uuid->handle-bytes
-  "Packs an account id into the 16 bytes WebAuthn carries as a user
+  "Packs a user id into the 16 bytes WebAuthn carries as a user
    handle. Deterministic, so the handle never has to be stored or looked
-   up -- it IS the account id, in the shape the spec wants."
+   up -- it IS the user id, in the shape the spec wants."
   ^bytes [^UUID uuid]
   (-> (ByteBuffer/allocate 16)
       (.putLong (.getMostSignificantBits uuid))
@@ -61,43 +61,43 @@
   (let [buf (ByteBuffer/wrap bs)]
     (UUID. (.getLong buf) (.getLong buf))))
 
-(defn- ->registered-credential [{:keys [credential-id public-key sign-count account-id]}]
+(defn- ->registered-credential [{:keys [credential-id public-key sign-count user-id]}]
   (-> (RegisteredCredential/builder)
       (.credentialId (ByteArray/fromBase64Url credential-id))
-      (.userHandle (ByteArray. (uuid->handle-bytes account-id)))
+      (.userHandle (ByteArray. (uuid->handle-bytes user-id)))
       (.publicKeyCose (ByteArray/fromBase64Url public-key))
       (.signatureCount (long sign-count))
       .build))
 
-(defn- display-name [{{:keys [handle-for-account display-name-for-account]} :accounts} account-id]
-  (or (when display-name-for-account (display-name-for-account account-id))
-      (handle-for-account account-id)))
+(defn- display-name [{{:keys [handle-for-user display-name-for-user]} :users} user-id]
+  (or (when display-name-for-user (display-name-for-user user-id))
+      (handle-for-user user-id)))
 
 ;; ------------------------------------------------------------------
 ;; The repository Yubico calls into during every ceremony
 ;; ------------------------------------------------------------------
 
 (defn- credential-repository
-  [{:keys [datasource] {:keys [account-id-for-handle handle-for-account]} :accounts}]
+  [{:keys [datasource] {:keys [user-id-for-handle handle-for-user]} :users}]
   (reify CredentialRepository
     (getCredentialIdsForUsername [_ handle]
-      (if-some [account-id (account-id-for-handle handle)]
+      (if-some [user-id (user-id-for-handle handle)]
         (into #{}
               (map (fn [{:keys [credential-id]}]
                      (-> (PublicKeyCredentialDescriptor/builder)
                          (.id (ByteArray/fromBase64Url credential-id))
                          .build)))
-              (credentials/for-account datasource account-id))
+              (credentials/for-user datasource user-id))
         #{}))
 
     (getUserHandleForUsername [_ handle]
-      (if-some [account-id (account-id-for-handle handle)]
-        (Optional/of (ByteArray. (uuid->handle-bytes account-id)))
+      (if-some [user-id (user-id-for-handle handle)]
+        (Optional/of (ByteArray. (uuid->handle-bytes user-id)))
         (Optional/empty)))
 
     (getUsernameForUserHandle [_ user-handle]
-      (let [account-id (handle-bytes->uuid (.getBytes ^ByteArray user-handle))]
-        (if-some [handle (handle-for-account account-id)]
+      (let [user-id (handle-bytes->uuid (.getBytes ^ByteArray user-handle))]
+        (if-some [handle (handle-for-user user-id)]
           (Optional/of handle)
           (Optional/empty))))
 
@@ -158,7 +158,7 @@
 ;; ------------------------------------------------------------------
 
 (defn start-registration
-  "Begin registering a key for an account that already exists. Returns
+  "Begin registering a key for a user that already exists. Returns
    {:options-json :pending}: send the first to the browser, keep the
    second until the response comes back.
 
@@ -173,12 +173,12 @@
    usernameless sign-in silently does not work. The cost is that older
    USB keys with little resident storage may refuse to register where
    PREFERRED would have succeeded."
-  [config {:keys [account-id]}]
-  (let [handle ((get-in config [:accounts :handle-for-account]) account-id)
+  [config {:keys [user-id]}]
+  (let [handle ((get-in config [:users :handle-for-user]) user-id)
         user (-> (UserIdentity/builder)
                  (.name handle)
-                 (.displayName (display-name config account-id))
-                 (.id (ByteArray. (uuid->handle-bytes account-id)))
+                 (.displayName (display-name config user-id))
+                 (.id (ByteArray. (uuid->handle-bytes user-id)))
                  .build)
         json (.toJson
               (.startRegistration
@@ -256,7 +256,7 @@
    this relying party.
 
    `finish-assertion` handles the result unchanged -- it resolves the
-   account from the response's user handle either way."
+   user from the response's user handle either way."
   [config]
   (assertion->pair
    (.startAssertion (relying-party config) (-> (StartAssertionOptions/builder) .build))))

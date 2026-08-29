@@ -7,7 +7,7 @@
    rather than re-verified here. Faking it would mean faking the
    signature check, which is the only part that matters.
 
-   What IS here is everything around that: the account seam Yubico calls
+   What IS here is everything around that: the user seam Yubico calls
    into, the options a browser receives, and every failure path -- which
    is where the mistakes this library could make actually live, and where
    a uniform rejection message has to be checked rather than assumed."
@@ -38,8 +38,8 @@
 
 (use-fixtures :each with-database)
 
-;; A directory standing in for the application's account model. The
-;; library never reads a field on an account -- this is the whole of what
+;; A directory standing in for the application's user model. The
+;; library never reads a field on a user -- this is the whole of what
 ;; it knows about people.
 (def ^:private directory
   {"nik@example.com" #uuid "00000000-0000-4000-8000-00000000000a"})
@@ -48,19 +48,19 @@
   {:origin "https://example.com"
    :app-name "Example"
    :datasource *db*
-   :accounts {:account-id-for-handle directory
-              :handle-for-account (fn [account-id]
-                                    (some (fn [[h a]] (when (= a account-id) h))
+   :users {:user-id-for-handle directory
+              :handle-for-user (fn [user-id]
+                                    (some (fn [[h a]] (when (= a user-id) h))
                                           directory))
-              :display-name-for-account (constantly "Nik")}})
+              :display-name-for-user (constantly "Nik")}})
 
-(def ^:private account-id (get directory "nik@example.com"))
+(def ^:private user-id (get directory "nik@example.com"))
 
 (defn- anomaly? [x] (some? (::anom/category x)))
 
 (defn- register-a-key! [credential-id]
   (auth/register-credential!
-   *db* {:account-id account-id
+   *db* {:user-id user-id
          :credential-uuid (random-uuid)
          :credential-id credential-id
          :public-key "cose"
@@ -73,10 +73,10 @@
 ;; ------------------------------------------------------------------
 
 (deftest user-handle-round-trips
-  (testing "an account id survives the trip through WebAuthn's 16-byte handle"
-    ;; The handle IS the account id in the shape the spec wants, which is
+  (testing "a user id survives the trip through WebAuthn's 16-byte handle"
+    ;; The handle IS the user id in the shape the spec wants, which is
     ;; why nothing stores one. If this stops round-tripping, every
-    ;; discoverable sign-in resolves to the wrong account or to none.
+    ;; discoverable sign-in resolves to the wrong user or to none.
     (dotimes [_ 100]
       (let [id (random-uuid)]
         (is (= id (webauthn/handle-bytes->uuid (webauthn/uuid->handle-bytes id)))))))
@@ -90,7 +90,7 @@
 
 (deftest begin-registration
   (testing "the browser receives creation options naming this relying party"
-    (let [{:keys [options-json pending]} (auth/begin-registration (config) {:account-id account-id})
+    (let [{:keys [options-json pending]} (auth/begin-registration (config) {:user-id user-id})
           options (json/parse-string options-json true)]
       (is (= "example.com" (get-in options [:rp :id]))
           "the relying-party id is the host alone -- a scheme or port here fails every ceremony")
@@ -103,7 +103,7 @@
           "registration's two halves are the same string; the assertion's are not")))
 
   (testing "residentKey is required, or usernameless sign-in silently finds nothing"
-    (let [{:keys [options-json]} (auth/begin-registration (config) {:account-id account-id})]
+    (let [{:keys [options-json]} (auth/begin-registration (config) {:user-id user-id})]
       (is (= "required"
              (get-in (json/parse-string options-json true)
                      [:authenticatorSelection :residentKey]))))))
@@ -141,13 +141,13 @@
 
 (deftest a-ceremony-that-does-not-verify-is-refused
   (testing "garbage in place of a registration response stores nothing"
-    (let [{:keys [pending]} (auth/begin-registration (config) {:account-id account-id})]
+    (let [{:keys [pending]} (auth/begin-registration (config) {:user-id user-id})]
       (is (anomaly? (auth/complete-registration!
                      (config)
                      {:pending pending :credential-json "{\"not\":\"a credential\"}"
-                      :account-id account-id :label "Phone"}
+                      :user-id user-id :label "Phone"}
                      now)))
-      (is (empty? (auth/credentials-for-account *db* account-id)))))
+      (is (empty? (auth/credentials-for-user *db* user-id)))))
 
   (testing "garbage in place of an assertion opens no session"
     (register-a-key! "cred-1")
@@ -156,7 +156,7 @@
                      (config)
                      {:pending pending :credential-json "{\"not\":\"a credential\"}"}
                      now)))
-      (is (empty? (auth/sessions-for-account *db* account-id now)))))
+      (is (empty? (auth/sessions-for-user *db* user-id now)))))
 
   (testing "verify never throws, whatever it is handed"
     ;; Every failure has to arrive as an anomaly. An exception escaping
@@ -171,7 +171,7 @@
   (testing "every sign-in failure says exactly the same thing"
     ;; auth.allium's guarantee. A caller must not be able to tell a
     ;; ceremony that did not verify from a credential that is not
-    ;; registered -- that difference is an oracle for whether an account
+    ;; registered -- that difference is an oracle for whether a user
     ;; exists.
     (register-a-key! "cred-1")
     (let [{:keys [pending]} (auth/begin-sign-in (config) {:handle "nik@example.com"})

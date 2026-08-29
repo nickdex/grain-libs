@@ -41,7 +41,7 @@
   (when row
     (-> row
         (update :device-id parse-uuid)
-        (update :account-id parse-uuid)
+        (update :user-id parse-uuid)
         (update :created-at #(when % (Instant/ofEpochMilli (long %))))
         (as-> d (assoc d :fingerprint (endpoint-fingerprint (:endpoint d)))))))
 
@@ -49,13 +49,13 @@
 ;; Reading
 ;; ------------------------------------------------------------------
 
-(defn for-account
-  "This account's devices, oldest first. What DeviceManagement lists and
+(defn for-user
+  "This user's devices, oldest first. What DeviceManagement lists and
    what a send iterates."
-  [datasource account-id]
+  [datasource user-id]
   (->> (sql/query datasource
-                  ["SELECT * FROM push_device WHERE account_id = ?
-                     ORDER BY created_at ASC" (str account-id)]
+                  ["SELECT * FROM push_device WHERE user_id = ?
+                     ORDER BY created_at ASC" (str user-id)]
                   store/options)
        (mapv row->device)))
 
@@ -81,15 +81,15 @@
    share a trigger and are told apart by whether the endpoint is known.
 
    A browser re-subscribing hands back the endpoint it already has, so
-   the ordinary repeat must not create a second device. The account is
+   the ordinary repeat must not create a second device. The user is
    reassigned rather than defended: an endpoint returning under a
-   different account means the browser was signed out and signed in as
-   someone else, and leaving it on the first account would send that
+   different user means the browser was signed out and signed in as
+   someone else, and leaving it on the first user would send that
    person's notifications to whoever holds the device now.
 
    The label is only replaced when one is supplied, so a re-subscribe
    does not undo a rename."
-  [datasource {:keys [account-id endpoint public-key auth-secret label]} ^Instant now]
+  [datasource {:keys [user-id endpoint public-key auth-secret label]} ^Instant now]
   (let [label (->label label)]
     (cond
       (str/blank? (str endpoint))
@@ -97,7 +97,7 @@
 
       (some? (by-endpoint datasource endpoint))
       (do (sql/update! datasource :push_device
-                       (cond-> {:account_id (str account-id)
+                       (cond-> {:user_id (str user-id)
                                 :public_key public-key
                                 :auth_secret auth-secret}
                          label (assoc :label label))
@@ -113,7 +113,7 @@
         (sql/insert! datasource :push_device
                      {:endpoint endpoint
                       :device_id (str device-id)
-                      :account_id (str account-id)
+                      :user_id (str user-id)
                       :public_key public-key
                       :auth_secret auth-secret
                       :label label
@@ -135,11 +135,11 @@
 (defn unsubscribe!
   "push.allium's UnsubscribeDevice: a person turning this off.
 
-   Scoped to the caller's account, so a device id alone cannot remove
+   Scoped to the caller's user, so a device id alone cannot remove
    somebody else's subscription."
-  [datasource device-id account-id]
+  [datasource device-id user-id]
   (sql/delete! datasource :push_device
-               {:device_id (str device-id) :account_id (str account-id)}
+               {:device_id (str device-id) :user_id (str user-id)}
                store/options)
   nil)
 
@@ -148,7 +148,7 @@
    that a subscription no longer exists.
 
    Deliberately separate from unsubscribe! even though the row goes the
-   same way. One is a person deciding and is scoped to their account;
+   same way. One is a person deciding and is scoped to their user;
    this is a service reporting, runs with no session behind it, and is
    keyed on the endpoint because that is what the service knows.
 

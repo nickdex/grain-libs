@@ -37,12 +37,12 @@
 
 (use-fixtures :each with-database)
 
-(defn- account [] (random-uuid))
+(defn- user [] (random-uuid))
 
 (defn- subscribe!
-  ([account-id endpoint] (subscribe! account-id endpoint "Chrome on Android"))
-  ([account-id endpoint label]
-   (devices/subscribe! *db* {:account-id account-id
+  ([user-id endpoint] (subscribe! user-id endpoint "Chrome on Android"))
+  ([user-id endpoint label]
+   (devices/subscribe! *db* {:user-id user-id
                              :endpoint endpoint
                              :public-key "public-key"
                              :auth-secret "auth-secret"
@@ -56,20 +56,20 @@
 ;; ------------------------------------------------------------------
 
 (deftest subscribe-device
-  (testing "SubscribeDevice ensures Device.created with the account and label"
-    (let [owner (account)
+  (testing "SubscribeDevice ensures Device.created with the user and label"
+    (let [owner (user)
           device (subscribe! owner "https://push.example/a" "Phone")]
       (is (not (anomaly? device)))
-      (is (= owner (:account-id device)))
+      (is (= owner (:user-id device)))
       (is (= "Phone" (:label device)))
       (is (= now (:created-at device)))))
 
   (testing "SubscribeDevice requires: label != \"\""
-    (is (anomaly? (subscribe! (account) "https://push.example/blank" "   ")))
-    (is (empty? (devices/for-account *db* (account)))))
+    (is (anomaly? (subscribe! (user) "https://push.example/blank" "   ")))
+    (is (empty? (devices/for-user *db* (user)))))
 
   (testing "a browser with no endpoint is refused"
-    (is (anomaly? (subscribe! (account) "" "Phone")))))
+    (is (anomaly? (subscribe! (user) "" "Phone")))))
 
 (deftest a-stored-device-carries-what-a-send-needs
   ;; The bug this pins: the columns were named after the Web Push JSON
@@ -82,14 +82,14 @@
   ;; Nothing caught it, because the other tests hand subscribe! a literal
   ;; map and assert on :label. Only a ROUND TRIP through the column names
   ;; shows it.
-  (let [owner (account)]
-    (devices/subscribe! *db* {:account-id owner
+  (let [owner (user)]
+    (devices/subscribe! *db* {:user-id owner
                               :endpoint "https://push.example/roundtrip"
                               :public-key "a-real-looking-public-key"
                               :auth-secret "a-real-looking-auth"
                               :label "Phone"}
                         now)
-    (let [device (first (devices/for-account *db* owner))]
+    (let [device (first (devices/for-user *db* owner))]
       (testing "the keys send! destructures survive the round trip"
         (is (= "a-real-looking-public-key" (:public-key device)))
         (is (= "a-real-looking-auth" (:auth-secret device))))
@@ -102,28 +102,28 @@
   ;; A browser re-subscribing hands back the endpoint it already has.
   ;; The ordinary repeat must not create a second device.
   (testing "ResubscribeDevice updates rather than creating a second row"
-    (let [owner (account)]
+    (let [owner (user)]
       (subscribe! owner "https://push.example/same" "Phone")
       (subscribe! owner "https://push.example/same" "Phone")
-      (is (= 1 (count (devices/for-account *db* owner))))))
+      (is (= 1 (count (devices/for-user *db* owner))))))
 
   (testing "and re-subscribing without a label keeps the one it was renamed to"
-    (let [owner (account)
+    (let [owner (user)
           device (subscribe! owner "https://push.example/keep" "Chrome on Android")]
       (devices/rename! *db* (:device-id device) "Work phone")
       (subscribe! owner "https://push.example/keep" nil)
       (is (= "Work phone" (:label (devices/by-id *db* (:device-id device)))))))
 
-  (testing "an endpoint returning under another account moves to it"
+  (testing "an endpoint returning under another user moves to it"
     ;; The browser was signed out and signed in as somebody else. Leaving
-    ;; it on the first account would send that person's notifications to
+    ;; it on the first user would send that person's notifications to
     ;; whoever holds the device now.
-    (let [first-owner (account)
-          second-owner (account)]
+    (let [first-owner (user)
+          second-owner (user)]
       (subscribe! first-owner "https://push.example/moved" "Phone")
       (subscribe! second-owner "https://push.example/moved" "Phone")
-      (is (empty? (devices/for-account *db* first-owner)))
-      (is (= 1 (count (devices/for-account *db* second-owner)))))))
+      (is (empty? (devices/for-user *db* first-owner)))
+      (is (= 1 (count (devices/for-user *db* second-owner)))))))
 
 ;; ------------------------------------------------------------------
 ;; RenameDevice
@@ -147,20 +147,20 @@
       (is (not= fingerprint (devices/endpoint-fingerprint (str endpoint "x"))))))
 
   (testing "every stored device carries one"
-    (let [owner (account)]
+    (let [owner (user)]
       (subscribe! owner "https://push.example/fp" "Phone")
-      (let [device (first (devices/for-account *db* owner))]
+      (let [device (first (devices/for-user *db* owner))]
         (is (= (devices/endpoint-fingerprint (:endpoint device))
                (:fingerprint device)))))))
 
 (deftest rename-device
   (testing "RenameDevice ensures device.label = label"
-    (let [device (subscribe! (account) "https://push.example/r" "Chrome on Android")]
+    (let [device (subscribe! (user) "https://push.example/r" "Chrome on Android")]
       (is (nil? (devices/rename! *db* (:device-id device) "Kitchen tablet")))
       (is (= "Kitchen tablet" (:label (devices/by-id *db* (:device-id device)))))))
 
   (testing "RenameDevice requires: label != \"\""
-    (let [device (subscribe! (account) "https://push.example/r2" "Keep me")]
+    (let [device (subscribe! (user) "https://push.example/r2" "Keep me")]
       (is (anomaly? (devices/rename! *db* (:device-id device) "  ")))
       (is (= "Keep me" (:label (devices/by-id *db* (:device-id device))))))))
 
@@ -170,27 +170,27 @@
 
 (deftest unsubscribe-device
   (testing "UnsubscribeDevice ensures: not exists device"
-    (let [owner (account)
+    (let [owner (user)
           device (subscribe! owner "https://push.example/u" "Phone")]
       (devices/unsubscribe! *db* (:device-id device) owner)
       (is (nil? (devices/by-id *db* (:device-id device))))
-      (is (empty? (devices/for-account *db* owner)))))
+      (is (empty? (devices/for-user *db* owner)))))
 
-  (testing "and another account cannot unsubscribe your device"
-    (let [owner (account)
+  (testing "and another user cannot unsubscribe your device"
+    (let [owner (user)
           device (subscribe! owner "https://push.example/u2" "Phone")]
-      (devices/unsubscribe! *db* (:device-id device) (account))
+      (devices/unsubscribe! *db* (:device-id device) (user))
       (is (some? (devices/by-id *db* (:device-id device)))))))
 
 (deftest retire-gone-device
   ;; The translate step: the push service saying a subscription no longer
   ;; exists. Keyed on the endpoint, because that is what the service
-  ;; knows, and unscoped by account, because no session is behind it.
+  ;; knows, and unscoped by user, because no session is behind it.
   (testing "RetireGoneDevice ensures: not exists device"
-    (let [owner (account)]
+    (let [owner (user)]
       (subscribe! owner "https://push.example/gone" "Phone")
       (devices/retire! *db* "https://push.example/gone")
-      (is (empty? (devices/for-account *db* owner))))))
+      (is (empty? (devices/for-user *db* owner))))))
 
 ;; ------------------------------------------------------------------
 ;; Invariants
@@ -198,25 +198,25 @@
 
 (deftest invariant-endpoint-identifies-one-device
   (testing "EndpointIdentifiesOneDevice: no endpoint appears twice"
-    (let [owners (repeatedly 3 account)]
+    (let [owners (repeatedly 3 user)]
       (doseq [owner owners
               n (range 3)]
         (subscribe! owner (str "https://push.example/" n) "Phone"))
-      ;; Nine subscribes across three endpoints. The last account to
+      ;; Nine subscribes across three endpoints. The last user to
       ;; claim each one holds it, and there are three rows, not nine.
       (let [endpoints (map :endpoint
-                           (mapcat #(devices/for-account *db* %) owners))]
+                           (mapcat #(devices/for-user *db* %) owners))]
         (is (= 3 (count endpoints)))
         (is (= (count endpoints) (count (distinct endpoints))))))))
 
 (deftest invariant-device-is-labelled
   (testing "DeviceIsLabelled: nothing reaches the table with a blank label"
-    (let [owner (account)]
+    (let [owner (user)]
       (subscribe! owner "https://push.example/ok" "Phone")
       (subscribe! owner "https://push.example/blank" "")
       (subscribe! owner "https://push.example/spaces" "   ")
-      (is (every? #(seq (:label %)) (devices/for-account *db* owner)))
-      (is (= 1 (count (devices/for-account *db* owner)))))))
+      (is (every? #(seq (:label %)) (devices/for-user *db* owner)))
+      (is (= 1 (count (devices/for-user *db* owner)))))))
 
 ;; ------------------------------------------------------------------
 ;; PushChannel

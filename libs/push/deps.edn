@@ -22,7 +22,7 @@
          org.xerial/sqlite-jdbc {:mvn/version "3.46.1.3"}
          com.cognitect/anomalies {:mvn/version "0.1.12"}}
 
- ;; No dependency on libs/auth. Push takes an opaque account id, so an
+ ;; No dependency on libs/auth. Push takes an opaque user id, so an
  ;; app can have notifications without passkeys -- and two :deps/root
  ;; entries from one repo that share a vendored component fail to resolve
  ;; with "no known ancestor relationship between local versions".

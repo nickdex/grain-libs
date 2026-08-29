@@ -39,15 +39,22 @@
       :origin            \"https://example.com\"   ; the relying party
       :app-name          \"Example\"
       :secure?           true        ; false only on plain-HTTP localhost
-      :accounts          {:account-id-for-handle    (fn [handle] ...)
-                          :handle-for-account       (fn [account-id] ...)
-                          :display-name-for-account (fn [account-id] ...)}
+      :users             {:user-id-for-handle    (fn [handle] ...)
+                          :handle-for-user       (fn [user-id] ...)
+                          :display-name-for-user (fn [user-id] ...)}
       :paths             {:sign-in \"/signin\" :enrol \"/enrol\"
                           :account \"/account\"}
       :vapid-public-key  \"...\"}     ; omit for an app without push
 
-   `:accounts` is the seam. This library stores an opaque account id and
+   `:users` is the seam. This library stores an opaque user id and
    never reads a field on it, so the application owns what a person IS.
+
+   `:paths :account` is the one place the old word survives, and on
+   purpose: it names the PAGE where somebody manages their passkeys,
+   sessions and devices, which is what every application calls an
+   account page. The model underneath is a user; the page is an account
+   page. Renaming it would also break bookmarks and the push script's
+   :after redirect for no gain.
 
    ## Wiring
 
@@ -67,7 +74,7 @@
    Authorization. `signed-in?` answers whether somebody is signed in and
    stops there. Whether they may touch a row, or hold a role, is the
    application's question and does not generalise -- and roles in
-   particular belong on the application's own account model rather than
+   particular belong on the application's own user model rather than
    on a session, which would go stale the moment one changed."
   (:require [nickdex.grain.auth.interface :as auth]
             [nickdex.grain.pedestal.assets :as assets]
@@ -122,7 +129,7 @@
    Without it a service worker serves a stale stylesheet forever."
   assets/asset-path)
 
-;; --- Reading, for an account page ---------------------------------
+;; --- Reading, for a user page ---------------------------------
 ;;
 ;; Re-exported so a consuming application needs ONE require as well as
 ;; one dependency. The routes that change these rows live here, so the
@@ -130,29 +137,29 @@
 ;; namespace into grain-auth would be depending on something the app
 ;; never declared.
 
-(def credentials-for-account
-  "Every passkey on an account, oldest first. Labels, dates and the
+(def credentials-for-user
+  "Every passkey on a user, oldest first. Labels, dates and the
    surrogate uuid the rename and remove routes take -- never the
    credential id or public key."
-  auth/credentials-for-account)
+  auth/credentials-for-user)
 
-(def sessions-for-account
-  "Every live session on an account. Pair with `session-of` to mark the
+(def sessions-for-user
+  "Every live session on a user. Pair with `session-of` to mark the
    one being used to read the list."
-  auth/sessions-for-account)
+  auth/sessions-for-user)
 
-(def devices-for-account
-  "Every push subscription on an account. Carries a fingerprint of the
+(def devices-for-user
+  "Every push subscription on a user. Carries a fingerprint of the
    endpoint rather than the endpoint, which is a capability."
-  push/for-account)
+  push/for-user)
 
 (def unsubscribe-device!
-  "Retire one push subscription, scoped to its account. The operator's
-   counterpart to the route a person reaches from their account page."
+  "Retire one push subscription, scoped to its user. The operator's
+   counterpart to the route a person reaches from their user page."
   push/unsubscribe!)
 
 (def notify!
-  "Deliver one message to every device on an account. Returns outcomes
+  "Deliver one message to every device on a user. Returns outcomes
    by count, e.g. {:delivered 2} or {:delivered 1 :gone 1}.
 
    Takes grain-push's own config -- {:datasource :vapid-public-key
@@ -184,13 +191,13 @@
   [ctx]
   (get ctx :grain.pedestal/session))
 
-(defn account-of
-  "The signed-in account id, or nil."
+(defn user-of
+  "The signed-in user id, or nil."
   [ctx]
-  (get-in ctx [:grain.pedestal/session :account-id]))
+  (get-in ctx [:grain.pedestal/session :user-id]))
 
-(defn enrolling-account
-  "The account an in-flight enrolment names, or nil. For a page that
+(defn enrolling-user
+  "The user an in-flight enrolment names, or nil. For a page that
    wants to greet somebody by name before they have a session."
   [ctx]
   (get ctx :grain.pedestal/enrolling))
@@ -198,13 +205,19 @@
 ;; --- Enrolment ----------------------------------------------------
 
 (def enrolment-code!
-  "Mint the six-digit code a new account needs to register its first
+  "Mint the six-digit code a new user needs to register its first
    passkey. Returns {:code :expires-at} once, in the clear.
+
+   Takes this library's config, the same map everything else here does.
 
    Hand it over however you like -- read down a phone, typed into a
    message. It names nothing and can be spoken, which the signed link
    this replaced could not. grain-auth stores only a hash, expires it
    after an hour and burns it after five wrong guesses.
+
+   Refused for a user that already has a passkey, and for one with no
+   handle -- a code is entered against a handle, so a user without one
+   could never enter it.
 
    The person enters their handle and the code at your :enrol page,
    which posts them to /enrol/verify."
@@ -217,15 +230,15 @@
   auth/clear-enrolment-code!)
 
 (def enrolment-pending?
-  "Whether an account has a code that could still be used. For an
+  "Whether a user has a code that could still be used. For an
    operator listing, not for a decision on the request path."
   auth/enrolment-pending?)
 
 (def reset-credentials!
-  "Remove every passkey and session on an account so a fresh code can
+  "Remove every passkey and session on a user so a fresh code can
    enrol it again -- the way back from losing every device.
 
    Operator-only by construction: it is on no route, and no code can
-   trigger it. It turns an account somebody holds into an account
+   trigger it. It turns a user somebody holds into a user
    whoever gets the next code holds, so it wants a human behind it."
   auth/reset-credentials!)

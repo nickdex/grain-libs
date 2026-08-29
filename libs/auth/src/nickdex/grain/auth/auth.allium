@@ -7,16 +7,16 @@
 -- both. This is a library spec: it governs credentials and sessions and
 -- knows nothing about the person behind them.
 --
--- The consuming application supplies Account. Nothing here reads a field
+-- The consuming application supplies User. Nothing here reads a field
 -- on it, so any entity with identity will do -- see identity.allium in
 -- smriti for the first consumer.
 --
 -- Includes: registering a credential, signing in with one, signing out,
 --           renaming and removing credentials, session expiry,
 --           the enrolment code that puts the FIRST credential on an
---           account, and the operator reset that allows another
+--           user, and the operator reset that allows another
 -- Excludes:
---   - The account itself: name, email, profile, and whether an account
+--   - The user itself: name, email, profile, and whether a user
 --     may be created at all. The consumer owns registration, which is
 --     what lets an application close signup without this spec knowing
 --   - Every non-passkey way of SIGNING IN: password, emailed sign-in
@@ -28,29 +28,29 @@
 --     is designed to survive all of them
 --   - Self-service recovery. Losing every credential is an operator
 --     matter here (ResetCredentials), not something the person holding
---     the account can do alone
+--     the user can do alone
 --   - The WebAuthn wire ceremony: challenge issue, attestation and
 --     assertion verification, relying-party id and origin. Transport,
 --     and the reason a vetted library does it rather than this spec
 --   - Which credential opened a session. Recording it would tie a
 --     session's lifetime to a credential's, and removing a credential
---     already ends every session on the account
+--     already ends every session on the user
 --   - Datastar signals, SSE patching, routes
 
 ------------------------------------------------------------
 -- External Entities
 ------------------------------------------------------------
 
--- A type placeholder. The consuming spec substitutes its own account
+-- A type placeholder. The consuming spec substitutes its own user
 -- entity; this one is never read, only held.
-external entity Account {}
+external entity User {}
 
 ------------------------------------------------------------
 -- Contracts
 ------------------------------------------------------------
 
 contract Authenticator {
-    make_credential: (account: Account, challenge: String) -> Credential
+    make_credential: (user: User, challenge: String) -> Credential
     sign: (challenge: String) -> Integer
 
     @invariant CounterRisesOrStaysZero
@@ -76,10 +76,10 @@ contract Authenticator {
 ------------------------------------------------------------
 
 entity Credential {
-    account: Account
+    user: User
 
     -- The authenticator's own identifier for this key. Unique across
-    -- every account, not merely within one.
+    -- every user, not merely within one.
     credential_id: String
 
     -- The public half. The private half never leaves the authenticator.
@@ -98,7 +98,7 @@ entity Credential {
 }
 
 entity Session {
-    account: Account
+    user: User
     started_at: Timestamp
     last_seen_at: Timestamp
     expires_at: Timestamp
@@ -112,14 +112,14 @@ entity Session {
     }
 }
 
--- The grant that lets a brand-new account register its first passkey.
+-- The grant that lets a brand-new user register its first passkey.
 --
 -- Registering a credential needs an authenticated caller and a new
--- account has nothing to authenticate with, so something has to bridge
+-- user has nothing to authenticate with, so something has to bridge
 -- that gap exactly once. A short code does it without a signing key and
 -- without putting a bearer credential in a URL.
 entity EnrolmentCode {
-    account: Account
+    user: User
 
     -- Only ever the hash. See CodeIsNeverStoredInTheClear.
     code_hash: String
@@ -154,14 +154,14 @@ config {
 ------------------------------------------------------------
 
 rule RegisterCredential {
-    when: RegisterCredential(account, credential_id, public_key, sign_count, label)
+    when: RegisterCredential(user, credential_id, public_key, sign_count, label)
 
     requires: label != ""
     requires: not exists Credential{credential_id: credential_id}
 
     ensures:
         Credential.created(
-            account: account,
+            user: user,
             credential_id: credential_id,
             public_key: public_key,
             sign_count: sign_count,
@@ -170,14 +170,14 @@ rule RegisterCredential {
         )
 
     @guidance
-        -- The uniqueness check spans every account, not just this one.
+        -- The uniqueness check spans every user, not just this one.
         -- A credential_id is unique by construction, so a collision is
         -- not two people picking the same name -- it is the same key
         -- being claimed twice, and letting the second claim through
-        -- would resolve one credential to two accounts.
+        -- would resolve one credential to two users.
         --
-        -- Registration runs against an account that already exists. An
-        -- application with open signup creates the account first and
+        -- Registration runs against a user that already exists. An
+        -- application with open signup creates the user first and
         -- registers the credential second; one with closed signup
         -- simply never offers the first step. That is the whole
         -- difference, and it is the consumer's to make.
@@ -192,7 +192,7 @@ rule SignIn {
         credential.sign_count = sign_count
         credential.last_used_at = now
         Session.created(
-            account: credential.account,
+            user: credential.user,
             started_at: now,
             last_seen_at: now,
             expires_at: now + config.session_lifetime,
@@ -225,7 +225,7 @@ rule SignOut {
     @guidance
         -- Serves both signing yourself out here and ending a session
         -- somewhere else. Nothing distinguishes them: a session is
-        -- ended by whoever holds the account, and where the request came
+        -- ended by whoever holds the user, and where the request came
         -- from does not change what happens to it.
 }
 
@@ -254,22 +254,22 @@ rule RemoveCredential {
     when: RemoveCredential(target)
 
     requires: exists target
-    requires: (Credentials where account = target.account).count > 1
+    requires: (Credentials where user = target.user).count > 1
 
     ensures:
-        for s in Sessions where account = target.account and status = active:
+        for s in Sessions where user = target.user and status = active:
             s.status = signed_out
         not exists target
 
     @guidance
-        -- Removing a key ends every session on the account, not only
+        -- Removing a key ends every session on the user, not only
         -- the ones that key opened. Blunt on purpose: a key is removed
         -- because it was lost or stolen, and at that moment the
         -- question is not which sessions it started but whether anyone
         -- else is still signed in.
         --
         -- The last credential cannot be removed. No password and no
-        -- emailed sign-in means an account with no credentials is one
+        -- emailed sign-in means a user with no credentials is one
         -- nobody can reach, and a person can always register a
         -- replacement first and then remove this one.
         --
@@ -280,44 +280,44 @@ rule RemoveCredential {
 }
 
 rule IssueEnrolmentCode {
-    when: IssueEnrolmentCode(account, code)
+    when: IssueEnrolmentCode(user, code)
 
-    requires: (Credentials where account = account).count = 0
+    requires: (Credentials where user = user).count = 0
 
     ensures:
-        not exists EnrolmentCode{account: account}
+        not exists EnrolmentCode{user: user}
         EnrolmentCode.created(
-            account: account,
+            user: user,
             code_hash: hash(code),
             expires_at: now + config.enrolment_lifetime,
             failed_attempts: 0,
         )
 
     @guidance
-        -- Issuing replaces rather than adds, so an account has at most
+        -- Issuing replaces rather than adds, so a user has at most
         -- one live code and there is nothing to sweep when one goes
         -- unused. It also means reissuing is the answer to "I lost it",
         -- which matters because the plaintext is not recoverable.
         --
-        -- Refused for an account that already has a key, so the
+        -- Refused for a user that already has a key, so the
         -- operator hears about it at the moment of issue rather than
         -- the person hearing about it at the moment of use.
 }
 
 rule VerifyEnrolmentCode {
-    when: VerifyEnrolmentCode(account, code)
+    when: VerifyEnrolmentCode(user, code)
 
-    requires: c: exists EnrolmentCode{account: account}
+    requires: c: exists EnrolmentCode{user: user}
     requires: c.failed_attempts < config.enrolment_max_attempts
     requires: c.expires_at > now
     requires: c.code_hash = hash(code)
-    requires: (Credentials where account = account).count = 0
+    requires: (Credentials where user = user).count = 0
 
     ensures: not exists c
 
     @guidance
         -- The credential count is asked here as well as at issue. A code
-        -- minted when an account had no key must not still work after
+        -- minted when a user had no key must not still work after
         -- one exists, or the window between the two is a window in which
         -- somebody else enrols.
         --
@@ -327,9 +327,9 @@ rule VerifyEnrolmentCode {
 }
 
 rule EnrolmentCodeGuessed {
-    when: VerifyEnrolmentCode(account, code)
+    when: VerifyEnrolmentCode(user, code)
 
-    requires: c: exists EnrolmentCode{account: account}
+    requires: c: exists EnrolmentCode{user: user}
     requires: c.failed_attempts < config.enrolment_max_attempts
     requires: c.code_hash != hash(code) or c.expires_at <= now
 
@@ -342,21 +342,21 @@ rule EnrolmentCodeGuessed {
 }
 
 rule ResetCredentials {
-    when: ResetCredentials(account)
+    when: ResetCredentials(user)
 
     ensures:
-        for c in Credentials where account = account:
+        for c in Credentials where user = user:
             not exists c
-        for s in Sessions where account = account and status = active:
+        for s in Sessions where user = user and status = active:
             s.status = signed_out
-        not exists EnrolmentCode{account: account}
+        not exists EnrolmentCode{user: user}
 
     @guidance
         -- The way back from losing every device, and the reason
         -- RemoveCredential can go on refusing to take a last key.
         --
-        -- Deliberately not on any surface. It turns an account somebody
-        -- holds into an account whoever receives the next code holds,
+        -- Deliberately not on any surface. It turns a user somebody
+        -- holds into a user whoever receives the next code holds,
         -- which is the one operation here that should cost a human
         -- decision rather than a request.
 }
@@ -370,14 +370,14 @@ invariant CodeIsNeverStoredInTheClear {
         c.code_hash != plaintext(c)
 }
 
-invariant AtMostOneLiveCodePerAccount {
+invariant AtMostOneLiveCodePerUser {
     for c in EnrolmentCodes:
-        (EnrolmentCodes where account = c.account).count = 1
+        (EnrolmentCodes where user = c.user).count = 1
 }
 
-invariant EnrolmentCodeOnlyOnAnUnenrolledAccount {
+invariant EnrolmentCodeOnlyOnAnUnenrolledUser {
     for c in EnrolmentCodes:
-        (Credentials where account = c.account).count = 0
+        (Credentials where user = c.user).count = 0
 }
 
 invariant CredentialIdIsUnique {
@@ -423,46 +423,46 @@ surface SignIn {
         -- Every assertion answers a challenge issued for that attempt
         -- and discarded with it. A captured assertion replayed later is
         -- refused, which is the only thing standing between an
-        -- intercepted ceremony and the account behind it.
+        -- intercepted ceremony and the user behind it.
 
     @guarantee RejectionRevealsNothing
         -- A refused sign-in says the same thing whether the credential
         -- is unknown, belongs to someone else, or failed its counter
         -- check. Telling them apart turns this surface into a way to
-        -- ask whether an account exists.
+        -- ask whether a user exists.
 
     @guidance
         -- No party is named here, because at this boundary there is not
-        -- one yet. A discoverable credential identifies its own account:
-        -- the person presents an assertion and the account follows from
+        -- one yet. A discoverable credential identifies its own user:
+        -- the person presents an assertion and the user follows from
         -- it, rather than naming themselves first and proving it after.
 }
 
 surface Enrolment {
     provides:
-        VerifyEnrolmentCode(account, code)
-        RegisterCredential(account, credential_id, public_key, sign_count, label)
+        VerifyEnrolmentCode(user, code)
+        RegisterCredential(user, credential_id, public_key, sign_count, label)
 
     contracts:
         demands Authenticator
 
     @guarantee RejectionRevealsNothing
-        -- One refusal for every failure: no such account, no code
+        -- One refusal for every failure: no such user, no code
         -- issued, the wrong code, an expired one, one guessed at too
-        -- often, and an account already enrolled. Telling them apart
-        -- says whether an account exists and whether it is already in
+        -- often, and a user already enrolled. Telling them apart
+        -- says whether a user exists and whether it is already in
         -- use, to somebody holding nothing but a guess.
 
     @guarantee CodeIsSpentOnFirstSuccess
         -- Verification consumes the code. The permission it leaves
         -- behind covers registering one passkey, and both are gone
         -- afterwards -- so a code overheard once cannot be used twice,
-        -- and cannot be used at all after the account has a key.
+        -- and cannot be used at all after the user has a key.
 
     @guidance
         -- No party is named, because at this boundary there is not one
-        -- yet: the whole point is that the account has no credential to
-        -- authenticate with. The account is named by its handle and the
+        -- yet: the whole point is that the user has no credential to
+        -- authenticate with. The user is named by its handle and the
         -- code is what makes the naming trustworthy.
         --
         -- Registering follows verification directly here rather than in
@@ -476,8 +476,8 @@ surface Operations {
     facing operator: Operator
 
     provides:
-        IssueEnrolmentCode(account, code)
-        ResetCredentials(account)
+        IssueEnrolmentCode(user, code)
+        ResetCredentials(user)
 
     @guarantee NotReachableOverHTTP
         -- Neither of these is mounted on a route, and neither is a
@@ -488,7 +488,7 @@ surface Operations {
     @guidance
         -- Both are operator work by nature. Issuing a code is how a
         -- person is let in at all, and resetting credentials is the one
-        -- operation that takes an account away from whoever currently
+        -- operation that takes a user away from whoever currently
         -- holds it -- so both should cost a human decision.
         --
         -- An application with open signup would move IssueEnrolmentCode
@@ -501,7 +501,7 @@ surface SessionManagement {
     facing holder: CredentialHolder
 
     exposes:
-        for s in Sessions where account = holder.account and status = active:
+        for s in Sessions where user = holder.user and status = active:
             s.started_at
             s.last_seen_at
             s.expires_at
@@ -515,7 +515,7 @@ surface SessionManagement {
         -- device next asks is not a sign-out; it is a request.
 
     @guidance
-        -- Every active session on the account, not only this one, so
+        -- Every active session on the user, not only this one, so
         -- that "I signed in on a machine I no longer have" is something
         -- a person can act on themselves. The session being used to
         -- view this list is one of the entries and can be ended like any
@@ -526,13 +526,13 @@ surface CredentialManagement {
     facing holder: CredentialHolder
 
     exposes:
-        for c in Credentials where account = holder.account:
+        for c in Credentials where user = holder.user:
             c.label
             c.created_at
             c.last_used_at
 
     provides:
-        RegisterCredential(holder.account, credential_id, public_key, sign_count, label)
+        RegisterCredential(holder.user, credential_id, public_key, sign_count, label)
         RenameCredential(credential, label)
         RemoveCredential(credential)
 
@@ -551,10 +551,10 @@ surface CredentialManagement {
         -- system recognises a key, not how a person does.
 
     @guidance
-        -- Multiple credentials per account is the ordinary case, not an
+        -- Multiple credentials per user is the ordinary case, not an
         -- advanced one: a phone, a laptop and a hardware key is three,
         -- and a person with one is a person one lost device away from
-        -- losing the account.
+        -- losing the user.
         --
         -- last_used_at is what makes a stale key recognisable. Without
         -- it, a list of keys is a list of names nobody can tell apart.
@@ -570,4 +570,4 @@ open question "Should an enrolment code be reissuable while one is still live? M
 
 open question "Should a failed sign-in be recorded? Nothing here observes one, so a credential can be probed without limit. Rate limiting is the usual answer and needs a fact to count."
 
-open question "May one person hold sessions on several accounts at once? Session carries a single account and nothing forbids a second, but no surface exposes switching between them."
+open question "May one person hold sessions on several users at once? Session carries a single user and nothing forbids a second, but no surface exposes switching between them."

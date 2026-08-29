@@ -30,14 +30,14 @@
    "CREATE TABLE IF NOT EXISTS push_device (
       endpoint    TEXT    PRIMARY KEY,
       device_id   TEXT    NOT NULL UNIQUE,
-      account_id  TEXT    NOT NULL,
+      user_id  TEXT    NOT NULL,
       public_key  TEXT    NOT NULL,
       auth_secret TEXT    NOT NULL,
       label       TEXT    NOT NULL,
       created_at  INTEGER NOT NULL
     )"
-   "CREATE INDEX IF NOT EXISTS push_device_account
-      ON push_device (account_id)"])
+   "CREATE INDEX IF NOT EXISTS push_device_user
+      ON push_device (user_id)"])
 
 (defn- column-names [conn]
   (set (map :name (jdbc/execute! conn ["PRAGMA table_info(push_device)"] options))))
@@ -51,13 +51,29 @@
    so every read produced a key nothing was looking for, and the
    subscription's public key arrived at the push library as nil. Names
    without digits round-trip; these ones cannot be got wrong the same
-   way again."
+   way again.
+
+   account_id -> user_id is the third, and a different kind: this library
+   used to call the subscriber an account, and it is a user. A column
+   rename is metadata -- SQLite rewrites the schema text and fixes
+   dependent indexes without touching a row -- so subscriptions survive
+   it. One-way in practice: an older build looking for account_id fails
+   on every query once this has run."
   [datasource]
   (with-open [conn (jdbc/get-connection datasource)]
-    (run! #(jdbc/execute-one! conn [%]) ddl)
+    ;; Renames FIRST, so CREATE TABLE IF NOT EXISTS sees a table that
+    ;; already has the columns it would otherwise have created it with.
     (let [columns (column-names conn)]
       (when (and (contains? columns "p256dh") (not (contains? columns "public_key")))
         (jdbc/execute-one! conn ["ALTER TABLE push_device RENAME COLUMN p256dh TO public_key"]))
       (when (and (contains? columns "auth") (not (contains? columns "auth_secret")))
-        (jdbc/execute-one! conn ["ALTER TABLE push_device RENAME COLUMN auth TO auth_secret"]))))
+        (jdbc/execute-one! conn ["ALTER TABLE push_device RENAME COLUMN auth TO auth_secret"]))
+      (when (and (contains? columns "account_id") (not (contains? columns "user_id")))
+        (jdbc/execute-one! conn ["ALTER TABLE push_device RENAME COLUMN account_id TO user_id"])))
+    ;; The old index by its old NAME. SQLite rewrites an index to follow a
+    ;; renamed column but keeps what it is called, so without this the ddl
+    ;; below adds push_device_user beside a surviving push_device_account
+    ;; -- two identical indexes on one column.
+    (jdbc/execute-one! conn ["DROP INDEX IF EXISTS push_device_account"])
+    (run! #(jdbc/execute-one! conn [%]) ddl))
   nil)

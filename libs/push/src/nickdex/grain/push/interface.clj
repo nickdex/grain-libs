@@ -11,7 +11,7 @@
    them, and a person asking to be erased could not be. Here, delete
    deletes.
 
-   No dependency on the auth library. `account-id` is an opaque uuid this
+   No dependency on the auth library. `user-id` is an opaque uuid this
    library stores and never reads, so an application can have
    notifications without passkeys.
 
@@ -43,16 +43,16 @@
   "Record a browser's subscription, or update the one already held for
    that endpoint.
 
-   Takes {:account-id :endpoint :public-key :auth-secret :label}. A
+   Takes {:user-id :endpoint :public-key :auth-secret :label}. A
    browser re-subscribing hands back the endpoint it already has, so the
    ordinary repeat is an update rather than a second row -- and an
-   endpoint returning under a different account moves to it, because
+   endpoint returning under a different user moves to it, because
    that means the browser was signed out and signed in as somebody else."
   devices/subscribe!)
 
-(def for-account
-  "This account's devices, oldest first. Each carries a :fingerprint."
-  devices/for-account)
+(def for-user
+  "This user's devices, oldest first. Each carries a :fingerprint."
+  devices/for-user)
 
 (def by-id
   "One device by its id. The id, not the endpoint: an endpoint is a
@@ -64,14 +64,14 @@
   devices/rename!)
 
 (def unsubscribe!
-  "A person turning this off. Scoped to their account, so a device id
+  "A person turning this off. Scoped to their user, so a device id
    alone cannot remove somebody else's subscription."
   devices/unsubscribe!)
 
 (def retire!
   "The push service reporting a subscription is gone. Keyed on the
    endpoint, because that is what the service knows, and unscoped by
-   account, because no session is behind it. Only ever for a PERMANENT
+   user, because no session is behind it. Only ever for a PERMANENT
    rejection."
   devices/retire!)
 
@@ -86,7 +86,7 @@
 ;; --- Delivery -----------------------------------------------------
 
 (def send!
-  "Deliver one message to every device on an account. Returns outcomes
+  "Deliver one message to every device on a user. Returns outcomes
    by count, e.g. {:delivered 2} or {:delivered 1 :gone 1}.
 
    Takes a config:

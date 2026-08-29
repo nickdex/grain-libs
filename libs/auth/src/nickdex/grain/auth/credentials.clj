@@ -29,7 +29,7 @@
   (when row
     (-> row
         (update :credential-uuid parse-uuid)
-        (update :account-id parse-uuid)
+        (update :user-id parse-uuid)
         (update :created-at store/<-millis)
         (update :last-used-at store/<-millis))))
 
@@ -40,7 +40,7 @@
 (defn by-credential-id
   "One credential by the id the authenticator sent. A primary-key lookup,
    which is the point of keying the table this way: it runs on every
-   assertion, before any account is known."
+   assertion, before any user is known."
   [datasource credential-id]
   (row->credential
    (sql/get-by-id datasource :auth_credential credential-id
@@ -56,24 +56,24 @@
                             {:credential_uuid (str credential-uuid)}
                             store/options))))
 
-(defn for-account
-  "Every credential this account can sign in with, oldest first."
-  [datasource account-id]
+(defn for-user
+  "Every credential this user can sign in with, oldest first."
+  [datasource user-id]
   (->> (sql/query datasource
                   ["SELECT * FROM auth_credential
-                     WHERE account_id = ? ORDER BY created_at ASC"
-                   (str account-id)]
+                     WHERE user_id = ? ORDER BY created_at ASC"
+                   (str user-id)]
                   store/options)
        (mapv row->credential)))
 
-(defn count-for-account
-  "How many ways in this account has. What RemoveCredential's guard is
+(defn count-for-user
+  "How many ways in this user has. What RemoveCredential's guard is
    asking, expressed as a COUNT so removing a key does not have to load
    every other one."
-  [datasource account-id]
+  [datasource user-id]
   (-> (jdbc/execute-one! datasource
                          ["SELECT COUNT(*) AS n FROM auth_credential
-                            WHERE account_id = ?" (str account-id)]
+                            WHERE user_id = ?" (str user-id)]
                          store/options)
       :n))
 
@@ -83,13 +83,13 @@
 
 (defn register!
   "auth.allium's RegisterCredential. Registers a passkey against an
-   account that already exists.
+   user that already exists.
 
-   The uniqueness check spans every account, not just this one, and it is
+   The uniqueness check spans every user, not just this one, and it is
    enforced by the primary key as well as read here -- so two concurrent
    registrations of the same id cannot both succeed. Reading first is
    what turns the constraint violation into a message a person can read."
-  [datasource {:keys [account-id credential-uuid credential-id
+  [datasource {:keys [user-id credential-uuid credential-id
                       public-key sign-count label]}
    ^Instant now]
   (let [label (->label label)]
@@ -104,7 +104,7 @@
       (do (sql/insert! datasource :auth_credential
                        {:credential_id credential-id
                         :credential_uuid (str credential-uuid)
-                        :account_id (str account-id)
+                        :user_id (str user-id)
                         :public_key public-key
                         :sign_count sign-count
                         :label label
@@ -138,27 +138,27 @@
 
 (defn remove!
   "auth.allium's RemoveCredential: remove a passkey and end every session
-   on the account.
+   on the user.
 
    Ending every session is blunt on purpose. A key is removed because it
    was lost or stolen, and at that moment the question is not which
    sessions it opened but whether anyone else is still signed in.
 
    The last key cannot be removed. There is no recovery in this library,
-   so an account with no credentials is one nobody can reach. Both the
+   so a user with no credentials is one nobody can reach. Both the
    count and the delete run in one transaction, or two concurrent removals
    could each see two keys and leave zero."
   [datasource credential-uuid]
   (jdbc/with-transaction [tx datasource]
     (if-let [credential (by-uuid tx credential-uuid)]
-      (let [account-id (:account-id credential)]
-        (if (<= (count-for-account tx account-id) 1)
+      (let [user-id (:user-id credential)]
+        (if (<= (count-for-user tx user-id) 1)
           (incorrect "This is your only passkey. Add another one before removing it.")
           (do (sql/delete! tx :auth_credential
                            {:credential_uuid (str credential-uuid)}
                            store/options)
               (sql/delete! tx :auth_session
-                           {:account_id (str account-id)}
+                           {:user_id (str user-id)}
                            store/options)
               nil)))
       {::anom/category ::anom/not-found

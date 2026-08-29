@@ -27,7 +27,7 @@
    same moment, with no route conflict warning anywhere.
 
    Every handler returns one refusal for every failure. Saying which step
-   went wrong tells whoever asked whether an account exists, whether it
+   went wrong tells whoever asked whether a user exists, whether it
    is enrolled, and whether a key is registered."
   (:require [cheshire.core :as json]
             [io.pedestal.http.body-params :as body-params]
@@ -46,13 +46,13 @@
 (defn- refused [] (json-response 403 {:ok false}))
 (defn- redirect [to] {:status 303 :headers {"Location" to}})
 
-(defn- account-of [request] (get-in request [:grain.pedestal/session :account-id]))
+(defn- user-of [request] (get-in request [:grain.pedestal/session :user-id]))
 (defn- anomaly? [x] (some? (:cognitect.anomalies/category x)))
 
 (defn- ceremony-config
   "What grain-auth's ceremony calls need, from this library's config."
-  [{:keys [datasource origin app-name accounts]}]
-  {:origin origin :app-name app-name :datasource datasource :accounts accounts})
+  [{:keys [datasource origin app-name users]}]
+  {:origin origin :app-name app-name :datasource datasource :users users})
 
 ;; ------------------------------------------------------------------
 ;; Enrolment
@@ -75,27 +75,27 @@
   [{:keys [paths] :as config}]
   (fn [request]
     (let [{:keys [handle code]} (:form-params request)]
-      (if-let [account-id (auth/verify-enrolment-code!
+      (if-let [user-id (auth/verify-enrolment-code!
                            (ceremony-config config) handle code (Instant/now))]
         (assoc (redirect (:enrol paths))
-               :session (assoc (:session request) :grain.pedestal/enrolling account-id))
+               :session (assoc (:session request) :grain.pedestal/enrolling user-id))
         ;; One refusal for a handle nobody holds, a code never issued, a
         ;; wrong one, an expired one, one guessed at too often, and an
-        ;; account already enrolled.
+        ;; user already enrolled.
         (redirect (str (:enrol paths) "?error=invalid-code"))))))
 
 (defn- registering-for
-  "The account a registration may act on: the signed-in one, or the one a
+  "The user a registration may act on: the signed-in one, or the one a
    verified enrolment code named. These are the only two ways a key is
-   ever added, and an account id in a request body is never one of them.
+   ever added, and a user id in a request body is never one of them.
 
-   The enrolling grant is re-checked against the account rather than
+   The enrolling grant is re-checked against the user rather than
    trusted for the life of the session: a code that verified before any
    key existed must not still be usable once one does."
   [{:keys [datasource]} request]
-  (or (account-of request)
+  (or (user-of request)
       (when-let [enrolling (get-in request [:session :grain.pedestal/enrolling])]
-        (when (empty? (auth/credentials-for-account datasource enrolling))
+        (when (empty? (auth/credentials-for-user datasource enrolling))
           enrolling))))
 
 ;; ------------------------------------------------------------------
@@ -104,9 +104,9 @@
 
 (defn- register-options-handler [config]
   (fn [request]
-    (if-let [account-id (registering-for config request)]
+    (if-let [user-id (registering-for config request)]
       (let [{:keys [options-json pending]}
-            (auth/begin-registration (ceremony-config config) {:account-id account-id})]
+            (auth/begin-registration (ceremony-config config) {:user-id user-id})]
         (-> (json-response 200 nil (assoc (:session request)
                                           :grain.pedestal/pending pending))
             (assoc :body options-json)))
@@ -123,14 +123,14 @@
   [config]
   (fn [request]
     (let [enrolling (get-in request [:session :grain.pedestal/enrolling])
-          account-id (registering-for config request)
+          user-id (registering-for config request)
           pending (get-in request [:session :grain.pedestal/pending])
           {:keys [credential label]} (:json-params request)
           args {:pending pending
                 :credential-json (json/generate-string credential)
-                :account-id account-id
+                :user-id user-id
                 :label (or label "Passkey")}
-          result (when (and account-id pending)
+          result (when (and user-id pending)
                    (if enrolling
                      (auth/complete-registration-and-sign-in!
                       (ceremony-config config) args (Instant/now))
@@ -174,7 +174,7 @@
 
 (defn- signin-finish-handler
   "Serves both the named and the discoverable path -- the assertion
-   resolves the account either way, so there is one handler and one
+   resolves the user either way, so there is one handler and one
    refusal rather than two of each."
   [config]
   (fn [request]
@@ -194,7 +194,7 @@
 (defn- signout-handler [{:keys [datasource paths]}]
   (fn [request]
     (when-let [session (:grain.pedestal/session request)]
-      (auth/sign-out! datasource (:session-id session) (:account-id session)))
+      (auth/sign-out! datasource (:session-id session) (:user-id session)))
     ;; Cleared whether or not the row was there. A cookie naming a
     ;; session that no longer exists is not a session, and leaving it
     ;; means every later request pays for the lookup that says so.
@@ -209,16 +209,16 @@
 ;; re-render from. Each redirects back and the reload is the update.
 ;;
 ;; Ownership is checked here AND inside the libraries, which scope by
-;; account in the SQL itself. Neither is redundant: this turns somebody
+;; user in the SQL itself. Neither is redundant: this turns somebody
 ;; else's id into a redirect rather than a 500, and that means a mistake
-;; here still cannot touch another account's row.
+;; here still cannot touch another user's row.
 ;; ------------------------------------------------------------------
 
 (defn- remove-credential-handler [{:keys [datasource paths]}]
   (fn [request]
-    (when-let [account-id (account-of request)]
+    (when-let [user-id (user-of request)]
       (when-let [uuid (some-> (get-in request [:path-params :credential-uuid]) str parse-uuid)]
-        (when (= account-id (:account-id (auth/credential-by-uuid datasource uuid)))
+        (when (= user-id (:user-id (auth/credential-by-uuid datasource uuid)))
           (auth/remove-credential! datasource uuid))))
     ;; The same redirect whether it worked, was refused as the last key,
     ;; or named somebody else's. The page that reloads shows what is
@@ -227,19 +227,19 @@
 
 (defn- rename-credential-handler [{:keys [datasource paths]}]
   (fn [request]
-    (when-let [account-id (account-of request)]
+    (when-let [user-id (user-of request)]
       (when-let [uuid (some-> (get-in request [:path-params :credential-uuid]) str parse-uuid)]
-        (when (= account-id (:account-id (auth/credential-by-uuid datasource uuid)))
+        (when (= user-id (:user-id (auth/credential-by-uuid datasource uuid)))
           (auth/rename-credential! datasource uuid (get-in request [:form-params :label])))))
     (redirect (:account paths))))
 
 (defn- end-session-handler [{:keys [datasource paths]}]
   (fn [request]
-    (let [account-id (account-of request)
+    (let [user-id (user-of request)
           target (some-> (get-in request [:path-params :session-id]) str parse-uuid)
           current? (= target (get-in request [:grain.pedestal/session :session-id]))]
-      (when (and account-id target)
-        (auth/sign-out! datasource target account-id))
+      (when (and user-id target)
+        (auth/sign-out! datasource target user-id))
       (if current?
         (assoc (redirect (:sign-in paths))
                :session (dissoc (:session request) :session-id))
@@ -264,10 +264,10 @@
 
 (defn- subscribe-handler [{:keys [datasource]}]
   (fn [request]
-    (if-let [account-id (account-of request)]
+    (if-let [user-id (user-of request)]
       (let [{:keys [endpoint p256dh auth label]} (:json-params request)
             result (push/subscribe! datasource
-                                    {:account-id account-id
+                                    {:user-id user-id
                                      :endpoint endpoint
                                      ;; The browser sends the Web Push
                                      ;; names; the table uses digit-free
@@ -281,17 +281,17 @@
 
 (defn- rename-device-handler [{:keys [datasource paths]}]
   (fn [request]
-    (when-let [account-id (account-of request)]
+    (when-let [user-id (user-of request)]
       (when-let [device-id (some-> (get-in request [:path-params :device-id]) str parse-uuid)]
-        (when (= account-id (:account-id (push/by-id datasource device-id)))
+        (when (= user-id (:user-id (push/by-id datasource device-id)))
           (push/rename! datasource device-id (get-in request [:form-params :label])))))
     (redirect (:account paths))))
 
 (defn- unsubscribe-handler [{:keys [datasource paths]}]
   (fn [request]
-    (when-let [account-id (account-of request)]
+    (when-let [user-id (user-of request)]
       (when-let [device-id (some-> (get-in request [:path-params :device-id]) str parse-uuid)]
-        (push/unsubscribe! datasource device-id account-id)))
+        (push/unsubscribe! datasource device-id user-id)))
     (redirect (:account paths))))
 
 ;; ------------------------------------------------------------------

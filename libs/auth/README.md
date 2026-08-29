@@ -57,7 +57,7 @@ instant.
 ```clojure
 ;; Registering a key, after the ceremony has verified the attestation
 (auth/register-credential!
-  ds {:account-id      account-id
+  ds {:user-id      user-id
       :credential-uuid (random-uuid)
       :credential-id   "base64url-from-the-authenticator"
       :public-key      "cose-key"
@@ -75,11 +75,11 @@ instant.
 (auth/session ds session-id now)          ; => session, or nil
 
 ;; Management
-(auth/credentials-for-account ds account-id)
-(auth/sessions-for-account ds account-id now)
+(auth/credentials-for-user ds user-id)
+(auth/sessions-for-user ds user-id now)
 (auth/rename-credential! ds credential-uuid "Work laptop")
 (auth/remove-credential! ds credential-uuid)
-(auth/sign-out! ds session-id account-id)
+(auth/sign-out! ds session-id user-id)
 ```
 
 Rejections come back as `cognitect.anomalies` maps, not exceptions. Messages
@@ -89,21 +89,21 @@ confirm something the caller should not learn.
 ## Wiring the ceremony
 
 The ceremony functions take a `config` naming your relying party and the seam
-to your account model:
+to your user model:
 
 ```clojure
 (def config
   {:origin     "https://example.com"   ; scheme + host (+ port), no path
    :app-name   "Example"               ; shown by the authenticator
    :datasource ds
-   :accounts   {:account-id-for-handle    (fn [handle] ...)
-                :handle-for-account       (fn [account-id] ...)
-                :display-name-for-account (fn [account-id] ...)}})
+   :users   {:user-id-for-handle    (fn [handle] ...)
+                :handle-for-user       (fn [user-id] ...)
+                :display-name-for-user (fn [user-id] ...)}})
 ```
 
 `handle` is WebAuthn's `user.name` — whatever you call people by when an
 authenticator asks. An email works; a username works. This library never
-interprets it. `display-name-for-account` is optional and falls back to the
+interprets it. `display-name-for-user` is optional and falls back to the
 handle; the two differ because an authenticator shows the display name to
 someone choosing between keys, so a person's name belongs there and an email
 belongs in the handle.
@@ -125,7 +125,7 @@ The matching `complete-` needs it back.
 
 **`:pending` is single use.** Discard the stash on completion whether or not
 the ceremony succeeded. A captured assertion replayed later is the thing
-standing between an intercepted ceremony and an account.
+standing between an intercepted ceremony and a user.
 
 ### The browser half goes in `<head>`
 
@@ -164,7 +164,7 @@ that a page whose body is streamed cannot run script on load to do so, which
 is a good reason to serve that one page as plain HTML.
 
 Prefer the discoverable path generally: `begin-sign-in` has to reveal whether
-an account exists, because the browser needs the credential ids to offer, and
+a user exists, because the browser needs the credential ids to offer, and
 `begin-discoverable-sign-in` needs no handle at all.
 
 ### Mounting: keep the ceremony paths free of path params
@@ -178,16 +178,16 @@ different prefix.
 
 ## What this library does not own
 
-**Accounts.** There is no name, no email, no profile here — `account-id` is an
+**Users.** There is no name, no email, no profile here — `user-id` is an
 opaque uuid this library stores and never reads. Your application owns the
 person; this owns the keys they get in with. That separation is what lets an
 application close signup without this library knowing signup exists: it
-registers credentials against accounts that already exist, and never creates
+registers credentials against users that already exist, and never creates
 one.
 
 **Whether anyone may sign up.** Same reason.
 
-**Recovery.** A credential is the only way in. An account that loses all of
+**Recovery.** A credential is the only way in. A user that loses all of
 them is reachable only if your application has its own path back — which is
 why `remove-credential!` refuses on the last remaining key.
 
@@ -199,7 +199,7 @@ explanation.
 Auth is infrastructure, not domain. Nothing here is a decision worth
 replaying: a key is registered or it is not, a session is valid or it is not.
 The workload is point lookups by credential id — which is what an authenticator
-hands you, before any account is known — and that is a primary key, not a
+hands you, before any user is known — and that is a primary key, not a
 projection. And a person who asks to be erased has to actually disappear,
 which an append-only log cannot do.
 
@@ -228,7 +228,7 @@ omits trailing zeros, so `2026-08-26T09:00Z` and `2026-08-26T09:00:00.123Z` do
 not compare correctly as strings — and `expires_at > ?` then silently returns
 the wrong rows for any timestamp landing on a whole second.
 
-**Removing a key ends every session on the account**, not only the ones that
+**Removing a key ends every session on the user**, not only the ones that
 key opened. A key is removed because it was lost or stolen, and at that moment
 the question is not which sessions it started but whether anyone else is still
 signed in.
@@ -238,7 +238,7 @@ sessions, so no sweep has to have run for the check to be correct.
 `purge-expired-sessions!` reclaims rows and changes no answer; it may run
 whenever, or never.
 
-**`sign-out!` is scoped to the caller's account.** Without `account_id` in that
+**`sign-out!` is scoped to the caller's user.** Without `user_id` in that
 `WHERE` clause, a session id alone is enough to sign somebody else out.
 
 ## Tests
@@ -259,7 +259,7 @@ One gap worth knowing: **no test exercises a ceremony that succeeds.** That
 needs a real authenticator holding a real private key, and the cryptography is
 Yubico's, verified by its own suite rather than re-verified here — faking it
 would mean faking the signature check, which is the only part that matters.
-What is covered is everything around it: the account seam Yubico calls into,
+What is covered is everything around it: the user seam Yubico calls into,
 the options a browser receives, and every failure path, including that a
 refusal never throws and that all of them say the same thing.
 

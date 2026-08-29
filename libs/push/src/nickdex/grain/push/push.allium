@@ -36,7 +36,7 @@
 
 -- Governed by identity.allium. Nothing here reads a field on it; a
 -- device belongs to a person and that is all this spec needs.
-external entity Account {}
+external entity User {}
 
 ------------------------------------------------------------
 -- Contracts
@@ -75,7 +75,7 @@ contract PushChannel {
 ------------------------------------------------------------
 
 entity Device {
-    account: Account
+    user: User
 
     -- Where the push service accepts messages for this browser install.
     -- Issued by the service, not chosen here, and it is what identifies
@@ -97,14 +97,14 @@ entity Device {
 ------------------------------------------------------------
 
 rule SubscribeDevice {
-    when: SubscribeDevice(account, endpoint, label)
+    when: SubscribeDevice(user, endpoint, label)
 
     requires: label != ""
     requires: not exists Device{endpoint: endpoint}
 
     ensures:
         Device.created(
-            account: account,
+            user: user,
             endpoint: endpoint,
             label: label,
             created_at: now,
@@ -112,7 +112,7 @@ rule SubscribeDevice {
 }
 
 rule ResubscribeDevice {
-    when: SubscribeDevice(account, endpoint, label)
+    when: SubscribeDevice(user, endpoint, label)
 
     let existing = Device{endpoint: endpoint}
 
@@ -120,7 +120,7 @@ rule ResubscribeDevice {
     requires: label != ""
 
     ensures:
-        existing.account = account
+        existing.user = user
         existing.label = label
 
     @guidance
@@ -129,10 +129,10 @@ rule ResubscribeDevice {
         -- create a second device. Same trigger as SubscribeDevice, told
         -- apart by whether the endpoint is already known.
         --
-        -- The account is reassigned rather than defended, because an
-        -- endpoint that comes back under a different account means the
+        -- The user is reassigned rather than defended, because an
+        -- endpoint that comes back under a different user means the
         -- browser was signed out and signed in as someone else. Leaving
-        -- it on the first account would send that person's
+        -- it on the first user would send that person's
         -- notifications to whoever holds the device now.
 }
 
@@ -203,10 +203,10 @@ invariant DeviceIsLabelled {
 ------------------------------------------------------------
 
 surface DeviceManagement {
-    context owner: Account
+    context owner: User
 
     exposes:
-        for d in Devices where account = owner:
+        for d in Devices where user = owner:
             d.label
             d.created_at
 
@@ -267,6 +267,6 @@ surface PushDelivery {
 
 open question "What happens when a push arrives and the app is already open on that device? Nothing here distinguishes them, so the same message is delivered whether or not the person is looking at the page it concerns."
 
-open question "Is there a limit on how many devices one account may have? Nothing caps it. Each one costs a request per send, and a subscription that is never used is only removed when the push service reports it gone."
+open question "Is there a limit on how many devices one user may have? Nothing caps it. Each one costs a request per send, and a subscription that is never used is only removed when the push service reports it gone."
 
 open question "Should a delivery failure that is not permanent be recorded? PushChannel says a transient failure is not gone, but nothing observes it, so a device that fails every send indefinitely looks exactly like one that works. Worth revisiting once something actually sends."

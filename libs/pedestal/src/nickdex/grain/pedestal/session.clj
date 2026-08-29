@@ -92,7 +92,7 @@
    Absent means nobody, and Grain refuses anything whose :authorized?
    does not return literal true, so this fails closed."
   [ctx]
-  (some? (get-in ctx [:grain.pedestal/session :account-id])))
+  (some? (get-in ctx [:grain.pedestal/session :user-id])))
 
 (defn gate
   "What a Datastar page needs alongside :authorized?.

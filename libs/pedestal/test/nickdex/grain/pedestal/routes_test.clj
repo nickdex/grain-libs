@@ -18,7 +18,7 @@
    :cookie-secret "test-secret"
    :origin "https://example.test"
    :app-name "Example"
-   :accounts {}
+   :users {}
    :paths {:sign-in "/signin" :enrol "/enrol" :account "/account"}
    :vapid-public-key "public-key"
    :service-worker-shell nil})
