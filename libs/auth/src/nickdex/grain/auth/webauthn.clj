@@ -29,6 +29,7 @@
    to a person choosing between keys, so \"Nikhil Warke\" belongs there
    and an email address belongs in the handle."
   (:require [cheshire.core :as json]
+            [cognitect.anomalies :as anom]
             [com.brunobonacci.mulog :as u]
             [nickdex.grain.auth.credentials :as credentials])
   (:import [com.yubico.webauthn AssertionRequest CredentialRepository
@@ -157,25 +158,8 @@
 ;; Registration
 ;; ------------------------------------------------------------------
 
-(defn start-registration
-  "Begin registering a key for a user that already exists. Returns
-   {:options-json :pending}: send the first to the browser, keep the
-   second until the response comes back.
-
-   Both are the same string. The browser's
-   parseCreationOptionsFromJSON wants .toJson(), not the
-   {\"publicKey\": ...} wrapper that .toCredentialsCreateJson() adds --
-   passing the wrapper produces a browser-side parse error that reads
-   like a malformed challenge.
-
-   residentKey is REQUIRED, which makes every credential discoverable.
-   Without it `start-discoverable-assertion` finds nothing and
-   usernameless sign-in silently does not work. The cost is that older
-   USB keys with little resident storage may refuse to register where
-   PREFERRED would have succeeded."
-  [config {:keys [user-id]}]
-  (let [handle ((get-in config [:users :handle-for-user]) user-id)
-        user (-> (UserIdentity/builder)
+(defn- start-registration* [config user-id handle]
+  (let [user (-> (UserIdentity/builder)
                  (.name handle)
                  (.displayName (display-name config user-id))
                  (.id (ByteArray. (uuid->handle-bytes user-id)))
@@ -191,6 +175,36 @@
                         .build))
                    .build)))]
     {:options-json json :pending json}))
+
+(defn start-registration
+  "Begin registering a key for a user that already exists. Returns
+   {:options-json :pending}: send the first to the browser, keep the
+   second until the response comes back.
+
+   Both are the same string. The browser's
+   parseCreationOptionsFromJSON wants .toJson(), not the
+   {\"publicKey\": ...} wrapper that .toCredentialsCreateJson() adds --
+   passing the wrapper produces a browser-side parse error that reads
+   like a malformed challenge.
+
+   residentKey is REQUIRED, which makes every credential discoverable.
+   Without it `start-discoverable-assertion` finds nothing and
+   usernameless sign-in silently does not work. The cost is that older
+   USB keys with little resident storage may refuse to register where
+   PREFERRED would have succeeded.
+
+   Returns an anomaly for a user the :users seam has no handle for. Two
+   ways to get there and both are real: a user recorded without an email
+   -- optional now, since a contact book is full of people with only a
+   phone -- and a session naming a user whose record is gone. Yubico's
+   UserIdentity refuses a null name, so without this the ceremony died
+   as a 500 with a stack trace naming a builder field, which says
+   nothing about either cause."
+  [config {:keys [user-id]}]
+  (if-let [handle ((get-in config [:users :handle-for-user]) user-id)]
+    (start-registration* config user-id handle)
+    {::anom/category ::anom/incorrect
+     ::anom/message "That user has no handle to register a passkey against."}))
 
 (defn verify-registration
   "Verify a registration response. Returns

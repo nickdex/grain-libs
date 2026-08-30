@@ -5,7 +5,9 @@
    the libraries these wrap are tested in their own directories. What is
    here is the shape of the routes, which is where this library has
    actually gone wrong."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
+            [next.jdbc :as jdbc]
             [clojure.test :refer [deftest is testing]]
             [nickdex.grain.pedestal.interface :as glue]
             ;; cookie-key is internal -- not something a consuming app
@@ -147,3 +149,45 @@
 
   (testing "secure is opt-out, for plain-HTTP localhost only"
     (is (false? (:secure (:cookie-attrs (glue/session-config config)))))))
+
+(deftest a-stale-session-does-not-shadow-a-fresh-enrolment
+  ;; Reported from production: enrolling gave a 500, and the request
+  ;; context showed a session naming one user and an enrolling grant
+  ;; naming another.
+  ;;
+  ;;   :grain.pedestal/session   {:user-id #uuid "03b8…" started 2026-08-29}
+  ;;   :grain.pedestal/enrolling #uuid "6c0f…"
+  ;;
+  ;; The session was a month-old cookie for a user whose record had gone;
+  ;; it won over a grant issued seconds earlier, and the ceremony went off
+  ;; to register a key for a ghost.
+  ;;
+  ;; The library holds an opaque id and cannot ask whether a user exists.
+  ;; It can ask the seam for a handle -- which registration needs anyway,
+  ;; so "no handle" and "cannot register" are the same condition.
+  (let [real (random-uuid)
+        ghost (random-uuid)
+        enrolling (random-uuid)
+        handles {real "real@example.test" enrolling "new@example.test"}
+        ;; A real database, because the enrolling branch asks whether
+        ;; that user already has a credential. Empty is the case under
+        ;; test: nobody has enrolled yet.
+        file (doto (java.io.File/createTempFile "grain-pedestal-test" ".sqlite") .delete)
+        ds (jdbc/get-datasource {:jdbcUrl (str "jdbc:sqlite:" (.getPath file))})
+        _ (glue/migrate! ds)
+        cfg (assoc config :datasource ds :users {:handle-for-user handles})
+        pick #(#'nickdex.grain.pedestal.routes/registering-for cfg %)]
+
+    (testing "a live session wins, which is adding a second key to your own account"
+      (is (= real (pick {:grain.pedestal/session {:user-id real}
+                         :session {:grain.pedestal/enrolling enrolling}}))))
+
+    (testing "a session naming somebody the seam does not know steps aside"
+      (is (= enrolling (pick {:grain.pedestal/session {:user-id ghost}
+                              :session {:grain.pedestal/enrolling enrolling}}))))
+
+    (testing "and with no grant behind it, a ghost session registers nothing"
+      (is (nil? (pick {:grain.pedestal/session {:user-id ghost} :session {}}))))
+
+    (doseq [suffix ["" "-wal" "-shm"]]
+      (io/delete-file (str (.getPath file) suffix) true))))

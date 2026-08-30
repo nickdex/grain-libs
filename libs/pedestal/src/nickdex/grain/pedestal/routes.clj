@@ -89,11 +89,21 @@
    verified enrolment code named. These are the only two ways a key is
    ever added, and a user id in a request body is never one of them.
 
+   THE SESSION ONLY WINS IF ITS USER IS STILL REAL. A session row lives
+   thirty days and outlives the records the application keeps, so a
+   cookie can name somebody who no longer exists -- and a stale one used
+   to shadow a FRESH enrolment grant, sending the ceremony off to
+   register a key for a ghost. The library holds an opaque id and cannot
+   ask whether a user exists, but it can ask the :users seam for a
+   handle, which the ceremony needs anyway: no handle, no registration,
+   whoever it is.
+
    The enrolling grant is re-checked against the user rather than
    trusted for the life of the session: a code that verified before any
    key existed must not still be usable once one does."
-  [{:keys [datasource]} request]
-  (or (user-of request)
+  [{:keys [datasource users]} request]
+  (or (when-let [signed-in (user-of request)]
+        (when ((:handle-for-user users) signed-in) signed-in))
       (when-let [enrolling (get-in request [:session :grain.pedestal/enrolling])]
         (when (empty? (auth/credentials-for-user datasource enrolling))
           enrolling))))
@@ -105,11 +115,16 @@
 (defn- register-options-handler [config]
   (fn [request]
     (if-let [user-id (registering-for config request)]
-      (let [{:keys [options-json pending]}
+      (let [{:keys [options-json pending] :as result}
             (auth/begin-registration (ceremony-config config) {:user-id user-id})]
-        (-> (json-response 200 nil (assoc (:session request)
-                                          :grain.pedestal/pending pending))
-            (assoc :body options-json)))
+        ;; begin-registration refuses a user the seam has no handle for.
+        ;; Without this the refusal became a 200 carrying a nil body, and
+        ;; the browser failed on a parse error naming nothing.
+        (if (anomaly? result)
+          (refused)
+          (-> (json-response 200 nil (assoc (:session request)
+                                            :grain.pedestal/pending pending))
+              (assoc :body options-json))))
       (refused))))
 
 (defn- register-finish-handler

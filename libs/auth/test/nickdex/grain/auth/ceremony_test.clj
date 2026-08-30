@@ -274,3 +274,23 @@
 
           (testing "and the origin it was comparing against -- the whole question"
             (is (= "https://example.com" (:configured-origin logged)))))))))
+
+(deftest registering-refuses-a-user-with-no-handle
+  ;; Two ways to get here, both real:
+  ;;
+  ;;   - a user recorded without an email. Optional now, because a
+  ;;     contact book is full of people with only a phone.
+  ;;   - a session naming a user whose record is gone. A session row
+  ;;     lives thirty days and outlives what the app keeps.
+  ;;
+  ;; Yubico's UserIdentity refuses a null name, so this used to die as a
+  ;; 500 with a stack trace naming a builder field -- which says nothing
+  ;; about either cause, and which is exactly how it shipped.
+  (let [config {:origin "https://example.test"
+                :app-name "Example"
+                :datasource nil
+                :users {:handle-for-user (constantly nil)
+                        :display-name-for-user (constantly "Ramesh")}}
+        result (webauthn/start-registration config {:user-id (random-uuid)})]
+    (is (= ::anom/incorrect (::anom/category result)))
+    (is (re-find #"no handle" (::anom/message result)))))
